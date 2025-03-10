@@ -1,0 +1,11 @@
+web3==6.15.1
+psycopg2-binary==2.9.9
+python-dotenv==1.0.0
+requests==2.31.0
+tqdm==4.66.2
+datetime
+sqlalchemy
+panoramix-decompiler
+openai
+pandas
+rapidfuzz 

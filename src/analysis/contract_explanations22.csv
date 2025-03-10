@@ -1,0 +1,689 @@
+address,explanation
+0x96fd442b9402d47e83714c9075d446d34c37776f,"Function Name: createRaffle
+Creates a new raffle by storing key parameters (prize, pricing structure, and funding targets) in contract state. It emits an event “RaffleCreated” upon completion. Internally, it initializes an empty entries list for the raffle, stores pricing structures in a mapping, and saves funding requirements (minimum/desired amounts). The raffle starts in the CREATED status.
+
+Function Name: stake
+Allows the owner of the prize tokens (ERC20 in this case) to stake them into the contract, moving the raffle from CREATED to ACCEPTED status. The contract transfers the specified token amount from the seller to itself. This step must happen before entries can be purchased.
+
+Function Name: buyEntry
+Enables a user to purchase entries in an active raffle (ACCEPTED status). The user selects a price structure ID, pays the exact required price, and the specified number of entries is recorded in the entries list (EntriesBought). The contract tracks total raised funds (amountRaised) and total entries (entriesLength). An “EntrySold” event is emitted.
+
+Function Name: giveBatchEntriesForFree
+The operator can add one free entry per specified player. This functions similarly to buyEntry but does not require payment. It increments the raffle’s entries array for each user and emits the “FreeEntry” event.
+
+Function Name: getRandomNumber
+Associates a Chainlink VRF request with a given raffle. It records the raffle’s ID and entries length in a mapping so that when Chainlink responds, fulfillRandomness can locate the correct raffle data.
+
+Function Name: fulfillRandomness
+The callback invoked by Chainlink VRF after a random number is produced. It normalizes the random result to fit within the total entries count. It stores the random values in the contract state (requests mapping) and then calls transferPrizesAndFunds to finalize the raffle outcome.
+
+Function Name: getWinnerAddressFromRandom
+Performs a binary search over the sorted entries array to determine which entry (and hence which participant) is the winner. If the chosen index has been “blacklisted” (set to address(0)), it searches backward to find a non-blacklisted entry.
+
+Function Name: transferPrizesAndFunds
+Concludes the raffle by transferring the prize token to the winner and sending the raised funds to both the seller and the platform (split by a platform fee). The raffle status updates to ENDED, and the contract emits the “RaffleEnded” and “FeeTransferredToPlatform” events.
+
+Function Name: setCashOutActions
+Prepares the raffle for early cashout if the seller calls for it and the minimum funds are reached. It checks that enough funds have been raised and updates the raffle status to EARLY_CASHOUT, emitting “EarlyCashoutTriggered”.
+
+Function Name: earlyCashOut
+Intended to trigger early drawing of a winner by the seller once the minimum funding threshold is met but before the desired funds are reached. Currently, the function is a placeholder without active VRF logic (commented code indicates it would call the VRF flow).
+
+Function Name: setWinnerActions
+Called internally to change the raffle status to CLOSING_REQUESTED once the desired funds are met. It also checks that the raffle is still in ACCEPTED status and that the amount raised has reached or exceeded both minimum and desired funding levels. The “SetWinnerTriggered” event signals the final winner selection logic should proceed.
+
+Function Name: setWinner
+Callable by the operator to finalize the raffle when the desired funds are raised. It requests a Chainlink VRF random number (via callVRFAndGetRequestId and getRandomNumber), moving the raffle into the random selection phase. Once random data arrives, fulfillRandomness → transferPrizesAndFunds completes the raffle.
+
+Function Name: cancelRaffle
+Lets the operator cancel an ongoing raffle (unless it is already ENDED, CANCELLED, or in certain other completion statuses). It returns the prize tokens to the seller if the raffle was ACCEPTED and marks the raffle CANCEL_REQUESTED, registering the current timestamp in case funds need to be handled later.
+
+Function Name: transferRemainingFunds
+After a raffle cancellation has waited 30 days (tracked by cancellingDate), this function can be invoked by the operator to move all raised funds to the platform wallet, finalizing the cancellation with a CANCELLED status.
+
+Function Name: cancelEntry
+Allows the operator to void a blacklisted or unwanted user’s entries in a raffle. It sets the participant’s address to address(0) in the entries list, effectively removing them from the potential winner pool. The contract emits “EntryCancelled” with details about how many entries were voided.
+
+Function Name: createFreeEntriesFromExternalContract
+Authorized external contracts (those with MINTERCONTRACT_ROLE) can grant free entries to a user in a raffle that either only accepts external-contract-based entries or accepts both external and direct purchases. This is used to integrate external minting actions with the raffle.
+
+Overall:  
+This contract manages raffles where ERC20 tokens serve as prizes. Operators create and configure raffles, sellers stake prize tokens, and participants buy or receive free entries. Once conditions are met (minimum or desired funds), the system requests a Chainlink VRF random value to select a winner. Funds and prizes are distributed accordingly, with platform fees taken out. The contract also supports early cashouts, cancellations with refund logic, and various administrative controls through assigned roles."
+0x8f9e9cc2bdcefae91f54344724437122099b5103,"Function Name: WILLIE constructor  
+Initializes the contract by calling the parent ERC721Creator constructor with the name ""Steamboat Willie Public Domain 2024"" and symbol ""WILLIE"". This sets up the base metadata for the ERC721 token collection.
+
+Function Name: ERC721Creator constructor  
+Assigns the implementation contract address to the designated storage slot and delegates a call to the implementation’s ""initialize"" function, passing in the NFT collection’s name and symbol. This establishes the upgradeable proxy pattern and ensures the logic contract is properly initialized.
+
+Function Name: implementation()  
+Returns the address of the current implementation contract from the storage slot. This is used to confirm or inspect which underlying logic contract is being used for ERC721 functionality.
+
+Function Name: fallback()  
+Forwards all external calls that do not match an existing function signature in the proxy to the implementation contract via delegatecall. This mechanism allows the proxy to leverage the logic of the underlying implementation.
+
+Function Name: receive()  
+Handles plain ether transfers sent to the contract with no data. Like fallback(), it delegates calls (if any logic is triggered) to the current implementation contract.
+
+Overall:  
+This contract uses a proxy pattern (via ERC721Creator) to deploy and manage an ERC721 token collection named ""Steamboat Willie Public Domain 2024"" (symbol ""WILLIE""). The primary functionality for the NFT logic is contained in a separate implementation contract, while this proxy/creator contract initializes, stores the implementation address, and delegates NFT-related calls to that implementation."
+0xdef1c0ded9bec7f1a1670819833240f027b25eff,"Function Name: constructor  
+• Registers the Bootstrap feature by assigning its address to handle calls to the bootstrap function. This is the initial setup step of the proxy, allowing further bootstrapping of features.
+
+Function Name: fallback  
+• Forwards any incoming calls to the appropriate implementation contract mapped by the function selector. Performs a delegatecall to the mapped implementation.
+
+Function Name: receive  
+• A special function that allows the contract to receive ETH without data. It does nothing beyond making ETH reception possible.
+
+Function Name: getFunctionImplementation  
+• Public function that returns the address of the implementation contract registered for a given function selector.
+
+Function Name: _revertWithData  
+• Internal utility that reverts execution using arbitrary revert data to capture the reason for failure.
+
+Function Name: _returnWithData  
+• Internal utility that returns execution with arbitrary return data, allowing delegatecall results to be relayed back to the original caller.
+
+Overall: This contract is the core 0x proxy: it automatically delegates calls to other “feature” contracts using a function selector lookup. It also defines low-level utilities for reverting or returning data."
+0x514910771af9ca656af840dff83e8264ecf986ca,"Function Name: SafeMath.mul  
+Explanation: Safely multiplies two uint256 values, reverting on overflow by asserting the product’s correctness.
+
+Function Name: SafeMath.div  
+Explanation: Safely divides one uint256 value by another, reverting on division by zero.
+
+Function Name: SafeMath.sub  
+Explanation: Safely subtracts one uint256 value from another, ensuring it does not underflow.
+
+Function Name: SafeMath.add  
+Explanation: Safely adds two uint256 values, reverting on overflow.
+
+Function Name: BasicToken.transfer  
+Explanation: Moves tokens from the sender’s account to the specified address, updating balances accordingly.
+
+Function Name: BasicToken.balanceOf  
+Explanation: Returns the token balance of the specified address.
+
+Function Name: StandardToken.transferFrom  
+Explanation: Transfers tokens on behalf of another address, provided the caller has an allowance set by that address.
+
+Function Name: StandardToken.approve  
+Explanation: Sets the amount of tokens that a spender is allowed to use from the message sender’s balance.
+
+Function Name: StandardToken.allowance  
+Explanation: Checks the remaining amount of tokens that a spender is allowed to withdraw from the owner’s balance.
+
+Function Name: StandardToken.increaseApproval  
+Explanation: Increases the allowance granted to a spender by a specified added value.
+
+Function Name: StandardToken.decreaseApproval  
+Explanation: Decreases the allowance granted to a spender by a specified subtracted value, down to a minimum of zero.
+
+Function Name: ERC677Token.transferAndCall  
+Explanation: Extends the transfer function to also call a specified contract’s fallback method if the recipient is a contract.
+
+Function Name: ERC677Token.contractFallback  
+Explanation: Internal function invoked after transferAndCall to execute onTokenTransfer on the receiving contract.
+
+Function Name: ERC677Token.isContract  
+Explanation: Checks if a given address is a contract by examining its code size.
+
+Function Name: LinkToken (constructor)  
+Explanation: Initializes the token with a total supply of 10^27, assigning all tokens to the contract deployer.
+
+Function Name: LinkToken.transferAndCall  
+Explanation: Overrides ERC677Token’s transferAndCall to include a validity check on the recipient address.
+
+Function Name: LinkToken.transfer  
+Explanation: Overrides the basic transfer to ensure the recipient address is valid (non-zero and not this contract).
+
+Function Name: LinkToken.approve  
+Explanation: Overrides standard approve to ensure the spender address is valid.
+
+Function Name: LinkToken.transferFrom  
+Explanation: Overrides standard transferFrom to ensure the recipient address is valid before transferring tokens.
+
+Function Name: validRecipient (modifier)  
+Explanation: Checks that the provided address is neither the zero address nor the contract’s own address before proceeding.
+
+Overall: This contract implements an ERC-20 token with additional ERC-677 functionality. It uses SafeMath for secure arithmetic, supports allowances and token transfers, and provides a “transferAndCall” mechanism that notifies receiving contracts when tokens arrive. The LinkToken constructor mints a fixed total supply and assigns it to the deployer, making it a standard ERC-20 token with extended capabilities for contract-based interactions."
+0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae,"Function Name: constructor  
+Sets the contract owner in the diamond storage and immediately performs an initial diamondCut to add the diamondCut function from the provided _diamondCutFacet. This ensures the core “cutting” functionality (adding/removing/replacing facets) is available from deployment.  
+
+Function Name: fallback  
+Acts as the diamond’s main dispatcher. It looks up the facet address responsible for the called function selector. If found, it uses delegatecall to forward the call to that facet; if not found, it reverts. This is how external calls transparently route to their respective implementation facets.  
+
+Function Name: receive  
+A simple payable function to allow the contract to receive Ether. It does not contain additional logic and merely accepts funds.  
+
+Overall:  
+LiFiDiamond implements the Diamond (EIP-2535) proxy pattern. It stores function selectors mapped to facet contracts and delegates calls to those facets. The constructor establishes initial ownership and sets up diamondCut functionality, while the fallback function routes all external calls to their respective facets. This design supports modular upgrades and expansions without needing to redeploy the core contract.  "
+0xf44f8eea027cfe94367726fc17200b2bc4aed638,"Function Name: constructor  
+This initializes the core pool by calling the parent ModaPoolBase constructor. It sets the poolTokenReserve to zero and establishes parameters like the MODA token address, factory address, and the pool token. It is designed specifically for “core” pools (e.g., MODA, MODA/ETH pair).
+
+Function Name: processRewards  
+An external function that anyone can call to process rewards for the sender. Internally, it calls _processRewards(msg.sender) to compute and distribute yield and vault rewards if enough time has passed since the last reward processing.
+
+Function Name: stakeAsPool  
+Allows another registered pool to stake yield on behalf of a user (_staker). It checks that the caller is a valid pool, processes any existing rewards for the user, and then creates a new deposit with a 1-year lock weight multiplier. It also updates the poolTokenReserve to track the tokens added.
+
+Function Name: _stake  
+Overrides the parent’s _stake method. After calling the parent version to handle the deposit logistics, this function specifically increments the poolTokenReserve by the staked amount, reflecting the new total amount of tokens held in this core pool.
+
+Function Name: _unstake  
+Overrides the parent’s _unstake method. Before calling the parent version to handle the fundamentals of unstaking, it checks that the deposit is unlocked (block.timestamp > lockedUntil) and then decrements the poolTokenReserve to reflect token removal.
+
+Function Name: _processRewards  
+Overrides the parent’s reward processing logic. After calling the parent to calculate the base reward, if the poolToken is the MODA token, it increases poolTokenReserve by any newly minted rewards. This integrates the MODA-specific core pool behavior.
+
+Overall:  
+ModaCorePool is a specific implementation for core pools (such as the native MODA or MODA/ETH). It extends ModaPoolBase and manages deposit tracking (including lock periods), rewards distribution, and updates a dedicated reserve (poolTokenReserve) to reflect the staked or minted balances. Rewards can be processed either directly by users or via another pool’s stakeAsPool function, and the contract enforces lock rules and weight calculations uniquely tailored for core pools."
+0x2260fac5e5542a773aa44fbcfedf7c193bc2c599,"Function Name: totalSupply()  
+This function (inherited from BasicToken) returns the total number of tokens in existence (totalSupply_). It simply reads and returns the internal variable that tracks how many tokens have been minted minus any that have been burned.
+
+Function Name: balanceOf(address _owner)  
+Also inherited from BasicToken, this function returns the token balance of a particular address by reading the balances mapping.
+
+Function Name: transfer(address _to, uint256 _value)  
+Inherited from BasicToken, this function lets the message sender send a specified amount of tokens to another address. It verifies the sender has enough tokens, ensures the recipient’s address is not zero, then updates the balances.
+
+Function Name: transferFrom(address _from, address _to, uint256 _value)  
+Defined in StandardToken, it allows a spender (msg.sender) to move tokens on behalf of another address. It checks the sender’s allowance and the from-address balance before transferring.
+
+Function Name: approve(address _spender, uint256 _value)  
+From StandardToken, this function sets the amount of tokens that an owner allows a spender to spend. It updates the internal allowed mapping and emits an Approval event.
+
+Function Name: allowance(address _owner, address _spender)  
+Also from StandardToken, it returns how many tokens a spender is still allowed to spend on behalf of an owner.
+
+Function Name: increaseApproval(address _spender, uint256 _addedValue)  
+From StandardToken, this function safely increases a spender’s allowance by a given amount, avoiding the two-transaction race condition inherent in some ERC20 implementations.
+
+Function Name: decreaseApproval(address _spender, uint256 _subtractedValue)  
+From StandardToken, this function safely decreases a spender’s allowance by a given amount, potentially setting it to zero.
+
+Function Name: name / symbol / decimals  
+Provided by DetailedERC20. These public variables store descriptive information about the token: its name (“Wrapped BTC”), its symbol (“WBTC”), and its decimal precision (8).
+
+Function Name: pause() and unpause()  
+Inherited from Pausable, these allow the contract owner to pause and resume token transfers and related operations. While paused, transfers and approvals are disallowed.
+
+Function Name: mint(address _to, uint256 _amount)  
+From MintableToken, it lets only the owner mint new tokens for a specified address. It updates totalSupply_ and the recipient’s balance.
+
+Function Name: finishMinting()  
+Overridden in the WBTC contract so that it always returns false. Effectively disables the ability to finishmint in the usual OpenZeppelin sense, preventing minting from ever being “closed.”
+
+Function Name: burn(uint256 _value)  
+Overridden in WBTC such that only the owner can call it. It reduces the caller’s (in this case, the owner’s) balance and totalSupply_ by the specified amount, permanently destroying tokens.
+
+Function Name: renounceOwnership()  
+Overridden in WBTC to revert any call. This ensures that ownership cannot be surrendered, preventing a scenario where the contract becomes ownerless.
+
+Overall:  
+This contract implements an ERC20-compliant “Wrapped BTC” token with a number of features inherited from OpenZeppelin libraries: it can be paused, minted, and burned (with certain restrictions). Unlike a typical mintable token, “finishing” the mint process is disallowed, and ownership cannot be renounced, ensuring continuous control over mint and burn operations for the owner. The purpose is to provide a tokenized representation of BTC on Ethereum under strict owner control."
+0x9f8f72aa9304c8b593d555f12ef6589cc3a579a2,"Function Name: DSToken (constructor)  
+Purpose and Logic: Initializes the token by setting its symbol (symbol_). Inherits functionality from DSTokenBase(0) (which starts total supply at zero) and DSStop (which introduces pausable behavior).
+
+Function Name: approve (overloaded)  
+Purpose and Logic: Allows an account to grant or set an allowance for another address to spend tokens on its behalf. The first approve() sets allowance to an effectively infinite amount (uint(-1)), and the second approve() sets a user-specified amount. Both respect the “stoppable” modifier, meaning they can only be called when the contract is not paused.
+
+Function Name: transferFrom  
+Purpose and Logic: Standard ERC-20 transferFrom function, modified to include the “stoppable” check. It transfers tokens from a source (src) to a destination (dst) if the caller has sufficient allowance (or infinite allowance). Balances and allowances are updated if valid.
+
+Function Name: push  
+Purpose and Logic: Convenience function that internally calls transferFrom, using msg.sender as the source. This allows the sender to “push” tokens to another address in a single call.
+
+Function Name: pull  
+Purpose and Logic: Another convenience function that calls transferFrom, but sets msg.sender as the recipient. This lets the caller “pull” tokens from another address (src) into their own balance.
+
+Function Name: move  
+Purpose and Logic: Similar to push and pull, but both source and destination can be specified as function parameters. Internally calls transferFrom to move tokens between two arbitrary addresses.
+
+Function Name: mint (overloaded)  
+Purpose and Logic: Creates new tokens and adds them to the balance of a specified address (or msg.sender if no address parameter is provided). Only an authorized account (auth) can call it, and the contract must not be paused. The total token supply is increased accordingly, and a Mint event is emitted.
+
+Function Name: burn (overloaded)  
+Purpose and Logic: Destroys tokens from a specified address (or msg.sender if no address parameter is provided). Only an authorized account (auth) can call it, and the contract must not be paused. The total token supply is decreased accordingly, and a Burn event is emitted.
+
+Function Name: setName  
+Purpose and Logic: Sets a human-readable name for the token (stored as a bytes32). Only callable by an authorized (auth) account.
+
+Function Name: stop / start  
+Purpose and Logic: Inherited from DSStop. Allows an authorized account to pause (stop) or unpause (start) the token’s transfer, mint, and burn functionality. This is useful for emergency halts or upgrades.
+
+Overall:  
+This contract is an ERC-20 token implementation with additional DSStop functionality (pausable behavior) and DSAuth access control. It allows authorized accounts to mint or burn tokens, while any account can transfer or approve spending (as in standard ERC-20). The contract owner can pause the token in emergencies and can also set the token’s name."
+0x5c7bcd6e7de5423a257d81b442095a1a6ced35c5,"Function Name: constructor(address logic, address admin, bytes memory data)  
+This constructor initializes the proxy. It sets “logic” as the initial implementation and “admin” as the proxy admin, then performs a delegate call using “data” if provided (often used to initialize the implementation’s state).
+
+Function Name: admin()  
+Retrieves the address of the current admin. Only callable by the admin itself due to the transparent proxy pattern.
+
+Function Name: implementation()  
+Returns the address of the current implementation contract. Also restricted so that only the admin can call it (again following the transparent proxy pattern).
+
+Function Name: changeAdmin(address newAdmin)  
+Changes the admin of the proxy to “newAdmin.” Only the current admin can call this. Emits an event to record the change.
+
+Function Name: upgradeTo(address newImplementation)  
+Updates the implementation address stored in the proxy to “newImplementation.” Only the admin can call this. Does not execute additional calls on the new implementation.
+
+Function Name: upgradeToAndCall(address newImplementation, bytes calldata data)  
+Upgrades the proxy to “newImplementation” and then executes a delegate call to that new implementation using “data.” This function is typically used when initializing new storage variables or running setup logic.
+
+Function Name: fallback / receive  
+All calls from non-admin addresses and calls to non-admin functions end up in the fallback or receive function. It delegates the call to the current implementation contract, allowing the proxy to behave like the implementation from an external caller’s perspective.
+
+Overall: This contract is a “transparent” upgradeable proxy that delegates external calls to a specified implementation contract. An admin address has special rights to upgrade the implementation or transfer admin privileges, while all other calls are forwarded to the implementation, enabling upgradability without disrupting contract interactions."
+0x6982508145454ce325ddbe47a25d4ec3d2311933,"Function Name: constructor  
+Initializes the token with the name “Pepe” and symbol “PEPE.” It also mints the specified total supply to the contract deployer, effectively setting up the initial distribution of tokens.
+
+Function Name: blacklist  
+Allows the contract owner to mark or unmark an address as blacklisted. Blacklisted addresses cannot participate in transfers (sending or receiving tokens).
+
+Function Name: setRule  
+Enables the contract owner to configure trading constraints. The parameters include:  
+• “_limited” to enable or disable holding constraints.  
+• “_uniswapV2Pair” to specify the address of the Uniswap pair (or other AMM pair).  
+• “_maxHoldingAmount” to set the maximum token balance an address can hold.  
+• “_minHoldingAmount” to set the minimum token balance required after receiving tokens.
+
+Function Name: _beforeTokenTransfer  
+An overridden ERC20 hook that checks for blacklisted addresses and enforces holding rules if the contract is in “limited” mode and the transfer originates from the specified pair address. If trading is not yet enabled (uniswapV2Pair is zero), only the owner can transfer tokens.
+
+Function Name: burn  
+Enables any holder to destroy their own tokens, reducing the total supply.
+
+Overall:  
+This contract is a standard ERC20 token with additional control mechanisms. The owner can blacklist addresses, configure trading constraints such as max/min holding limits, and start or stop trading by setting the Uniswap pair address. The token can also be burned by its holders, thus decreasing the total supply."
+0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2,"Function Name: fallback  
+This is the contract’s fallback function, which is triggered when the contract receives Ether without any data. It automatically calls the deposit() function, allowing Ether sent directly to the contract to be wrapped as WETH.  
+
+Function Name: deposit  
+This function allows a user to send Ether (msg.value) to the contract and receive an equivalent balance of WETH. It updates the caller’s balance, emits a Deposit event, and increases the contract’s total Ether holdings.  
+
+Function Name: withdraw  
+This function lets a user burn a specified amount of WETH (wad) and receive the equivalent Ether back. It decreases the caller’s WETH balance, transfers the Ether, and emits a Withdrawal event. A require statement checks that the caller’s balance is sufficient.  
+
+Function Name: totalSupply  
+This is a view function that returns the total amount of Ether held by the contract. It simply returns this.balance, which is the cumulative WETH supply backed by real Ether.  
+
+Function Name: approve  
+This function allows a user (msg.sender) to grant an allowance of WETH to another address (guy) up to a specified amount (wad). It records the allowance in the allowance mapping and emits an Approval event.  
+
+Function Name: transfer  
+This function enables a user to transfer WETH directly from their balance to another address (dst). Under the hood, it calls transferFrom(msg.sender, dst, wad) to perform the actual transfer logic.  
+
+Function Name: transferFrom  
+This function transfers WETH from one address (src) to another (dst), respecting the sender’s allowance if the caller is not the same as the source. It checks that src has enough balance, optionally reduces the spender’s allowance, updates balances, and emits a Transfer event.  
+
+Overall:  
+This contract is a classic “Wrapped Ether” implementation. It allows users to deposit Ether into the contract and receive WETH tokens in return. The contract maintains a 1:1 peg between WETH and Ether, providing an ERC20-compliant token that represents Ether for use in ERC20-based applications."
+0xbca47158ecd586ca4cdddaa5bd5e38d4f1e677b2,"Function Name: constructor  
+• Deploys the contract with initial settings for token name, symbol, base URI, maximum supply, payment splitting details, and royalty information.  
+• Initializes an internal counter for token IDs and stores a reference to the ContractGlossary contract that provides external addresses.  
+
+Function Name: setIndexContract  
+• Allows the contract owner to update the external ContractGlossary reference.  
+• Ensures the contract knows the correct addresses for Farm, HorsePass, LienedFarm, and VRF if needed.  
+
+Function Name: resetTokenIDs  
+• Clears the array (tokenIDs) of available token IDs by resetting it to an empty array.  
+
+Function Name: addTokenIDs  
+• Populates the tokenIDs array with a range of IDs from start (inclusive) to stop (exclusive).  
+• These IDs can later be randomly assigned to callers during certain mint operations.  
+
+Function Name: addRandNums  
+• Called only by the VRFV2 contract (verified via ContractGlossary).  
+• Stores or updates the random numbers (randNums) for a given user’s pending request.  
+
+Function Name: refreshContracts  
+• Internal helper that fetches and updates the addresses of the Farm, LienedFarm, and HorsePass contracts from the ContractGlossary.  
+
+Function Name: setExtMintAddress  
+• Sets an external allowed contract for minting (ExtMintAddress).  
+• Ensures only the owner can specify a valid address for external minting.  
+
+Function Name: preMint  
+• Mints a specified number of horses (num) directly to this contract address.  
+• Typically used to populate the contract with tokens that can then be later transferred to users.  
+
+Function Name: _reqSeed  
+• Internal function to request random data (seeds) from the VRFV2 contract for a given number (num_req).  
+• Stores the resulting request ID and associates it with the requester.  
+
+Function Name: mintTransferReq  
+• Verifies that the caller owns the specified HorsePass token IDs.  
+• Initiates a randomness request (_reqSeed) for as many random numbers as there are HorsePass IDs.  
+• Records these pass IDs and the request ID under the caller’s pending request.  
+
+Function Name: mintTransferFul  
+• Completes the mint process that was started by mintTransferReq.  
+• Uses the random numbers (randNums) previously stored to select token IDs from tokenIDs.  
+• Transfers those tokens from the contract to the caller, then transfers the used HorsePass tokens from the caller to this contract.  
+
+Function Name: adminMintTransferReq  
+• Allows the contract owner to initiate a mint-and-transfer request for a specified number of tokens.  
+• Requests random numbers from the VRF contract.  
+
+Function Name: adminMintTransferFul  
+• Completes the admin-only mint request by using stored randomness to pick token IDs.  
+• Transfers those tokens from the contract to a specified address (to).  
+
+Function Name: extMint  
+• Allows an external contract (identified by ExtMintAddress) to mint a specified number of tokens (amount_req) directly to a user.  
+• Increments the internal token counter.  
+
+Function Name: freeMintVoSTransferReq  
+• Called only by the LienedFarm contract (verified via ContractGlossary).  
+• Requests random numbers for a “free mint” operation on behalf of a specified recipient.  
+• Marks the request as a freeMint to distinguish it from normal operations.  
+
+Function Name: freeMintVOSTransferFul  
+• Completes the free mint request by transferring a specified number of tokens (based on the stored randomness) from the contract to the requestor.  
+• Ensures that the request was flagged as freeMint.  
+
+Function Name: setStable  
+• Called by the Farm contract to associate a horse token (horseID) with farming (farmID) for a certain term (stableTerm).  
+• Updates the stables mapping and emits an event.  
+
+Function Name: setBaseUri  
+• Updates the base token URI used to construct metadata URLs.  
+
+Function Name: _baseURI  
+• Internal function returning the base URI string that forms the prefix for token metadata.  
+• Overridden to use the _baseTokenURI state variable.  
+
+Function Name: mint  
+• An owner-only function to mint a specified number of tokens (count) directly to a given address.  
+
+Function Name: checkStable  
+• Returns the farm ID associated with a given horse token (horseID).  
+
+Function Name: checkStableExp  
+• Returns the stable expiration date (expDate) for a horse token (horseID).  
+
+Function Name: MAX_TOTAL_MINT  
+• Returns the maximum supply of Horse tokens that can ever be minted by this contract.  
+
+Function Name: pause  
+• Owner-only function to pause all contract operations (e.g., minting, transfers that rely on whenNotPaused).  
+
+Function Name: unpause  
+• Owner-only function to resume operations after a pause.  
+
+Overall:  
+This Horse contract manages the minting and distribution of NFTs representing horses. It integrates with an external randomness provider (VRFV2), external contracts (Farm, LienedFarm, HorsePass), and a central ContractGlossary for addresses. Using a combination of mint requests, random draws from a token pool, and stable assignments, the contract provides flexible ways to create, distribute, and track these NFTs, while also supporting royalty payments and payment splitting among designated recipients."
+0x6131b5fae19ea4f9d964eac0408e4408b66337b5,"Function Name: constructor  
+Initializes the contract by storing the address of the wrapped ETH (WETH). This WETH address is used within the contract as a reference for wrapped ETH operations.  
+
+Function Name: receive  
+A fallback function that allows the contract to receive native ETH. This is helpful when ETH needs to be handled in swaps or fee operations.  
+
+Function Name: rescueFunds  
+Allows the owner to recover any ERC20 tokens or ETH accidentally sent to the contract. Ensures that only the owner can execute this, preventing accidental token loss.  
+
+Function Name: updateWhitelist  
+Enables the owner to add or remove addresses from the whitelist. Only whitelisted addresses can be used as call targets for swaps, providing an extra layer of security.  
+
+Function Name: swapGeneric  
+Performs a generic swap operation using a whitelisted target.  
+• It checks and collects any additional ETH if required.  
+• Extracts transaction parameters (including fees and source/destination tokens).  
+• Takes fees either in the source token or destination token as specified by flags.  
+• Executes the swap by calling the external whitelisted contract (callTarget).  
+• Ensures that the return amount meets or exceeds a minimum threshold (minReturnAmount).  
+• Emits events recording the swap details, the exchange, and any client data.  
+
+Function Name: swap  
+Similar to swapGeneric but structured to call a standardized “callBytes(...)” approach for aggregator executors.  
+• It checks/permits the necessary tokens and calculates fees.  
+• Routes the user’s tokens to the swap executor.  
+• Takes fees on either the source or destination token depending on the flags.  
+• Executes the swap, verifies the return amount, and emits relevant events.  
+
+Function Name: swapSimpleMode  
+A simplified swap flow for ERC20 → token swaps in multiple sequences.  
+• It first collects and deducts fees if fees are taken on the source token. Otherwise, the contract will receive the output before taking fees.  
+• Distributes source tokens among various first pools (multi-pool logic).  
+• Makes a series of swaps by calling “swapSingleSequence(...)”.  
+• Potentially applies destination-token-based fees.  
+• Transfers the final swapped tokens to the user if fees are taken on the destination side.  
+
+Overall: The contract serves as a routing mechanism for aggregated swaps. It supports customizable fee structures, partial fills, multiple whitelisted targets for executing swaps, and both ERC20 and ETH transactions. The core functions allow users to swap tokens or ETH with specific control over fee mechanics, minimum return amounts, and whitelisted integrations."
+0x1111111254eeb25477b68fb85ed929f73a960582,"Function Name: increaseNonce  
+Purpose/Logic: Advances the sender’s nonce by exactly one, invalidating all orders dependent on the old nonce.  
+
+Function Name: advanceNonce  
+Purpose/Logic: Advances the sender’s nonce by a specified positive amount, thereby invalidating multiple sequences of orders in a single call.  
+
+Function Name: nonceEquals  
+Purpose/Logic: Checks if an address currently has a specific nonce. Useful for validating that a particular nonce has not been moved past.  
+
+Function Name: remaining  
+Purpose/Logic: For a given limit order hash, returns the exact remaining maker amount not yet filled (reverts if the order does not exist).  
+
+Function Name: remainingRaw  
+Purpose/Logic: For a given limit order hash, returns the stored “remaining amount + 1.” This is 0 if the order does not exist, 1 if fully filled, or “unfilled+1” otherwise.  
+
+Function Name: remainingsRaw  
+Purpose/Logic: Returns the raw remaining amount storage values for multiple order hashes in a single call, helping batch-queries of order states.  
+
+Function Name: checkPredicate  
+Purpose/Logic: Evaluates the custom logical condition (predicate) embedded in a limit order, determining if the order remains valid under custom constraints.  
+
+Function Name: hashOrder  
+Purpose/Logic: Computes the EIP-712 hash of the provided limit order. This hash uniquely identifies the order on-chain.  
+
+Function Name: simulate  
+Purpose/Logic: Delegate-calls arbitrary data against the contract for off-chain simulation. Always reverts, returning whatever data was produced so one can determine whether intermediate operations would succeed.  
+
+Function Name: cancelOrder  
+Purpose/Logic: Cancels a regular limit order by setting its remaining fraction to fully filled, preventing any further fills of that order.  
+
+Function Name: fillOrder  
+Purpose/Logic: Fills all or part of a regular limit order, transferring maker assets to the taker and taker assets to the maker subject to order constraints.  
+
+Function Name: fillOrderToWithPermit  
+Purpose/Logic: Same as “fillOrder” but calls a permit operation first, allowing an on-the-fly ERC20 allowance approval, and then targets the outgoing funds to a specified recipient rather than msg.sender.  
+
+Function Name: fillOrderTo  
+Purpose/Logic: Same as “fillOrder” but allows specifying a recipient address for the maker’s tokens.  
+
+Function Name: fillOrderRFQ  
+Purpose/Logic: Fills an RFQ-style limit order by transferring the designated amounts between maker and taker addresses if still valid. Particular to Request-For-Quote flow.  
+
+Function Name: fillOrderRFQCompact  
+Purpose/Logic: Similar to “fillOrderRFQ” but accepts a compact 64-byte signature or a “smart contract” signature indicator, reducing gas and call data size.  
+
+Function Name: fillOrderRFQToWithPermit  
+Purpose/Logic: Same as “fillOrderRFQTo” but calls permit first, allowing the taker to set ERC20 allowances in a single transaction.  
+
+Function Name: fillOrderRFQTo  
+Purpose/Logic: Fills a maker’s RFQ-type order and sends tokens to a specified recipient while verifying and updating the order’s fill status.  
+
+Function Name: cancelOrderRFQ  
+Purpose/Logic: Cancels an RFQ-style order by marking it as used in the maker’s invalidator bitmask, preventing further fills.  
+
+Function Name: unoswapToWithPermit  
+Purpose/Logic: Executes a Uniswap-like swap (via the “unoswap” mechanism) while also allowing a permit execution for token approvals. Sends output tokens to a specified recipient.  
+
+Function Name: unoswapTo  
+Purpose/Logic: Same “unoswap” mechanism but sends the swapped tokens to an indicated recipient address.  
+
+Function Name: unoswap  
+Purpose/Logic: Swaps a specified amount of one token for another using an embedded path of Uniswap V2-like pools, or directly with ETH.  
+
+Function Name: uniswapV3SwapToWithPermit  
+Purpose/Logic: Similar to “uniswapV3SwapTo” but calls a permit procedure on the source token. Provides route execution across a chain of Uniswap V3 pools.  
+
+Function Name: uniswapV3Swap  
+Purpose/Logic: Uses a single or chain of Uniswap V3 pools to swap tokens, sending the resulting tokens to msg.sender.  
+
+Function Name: uniswapV3SwapTo  
+Purpose/Logic: Same logic as “uniswapV3Swap” but directs output tokens to an arbitrary recipient instead of msg.sender.  
+
+Function Name: clipperSwapToWithPermit  
+Purpose/Logic: Calls Clipper exchange’s swap function (ETH ↔ ERC20 or ERC20 ↔ ERC20), executing a permit on the source token in the same transaction, and delivering proceeds to a specified address.  
+
+Function Name: clipperSwapTo  
+Purpose/Logic: Clipper exchange swap that sends output to a custom recipient instead of msg.sender.  
+
+Function Name: clipperSwap  
+Purpose/Logic: Straightforward Clipper exchange swap sending tokens back to msg.sender.  
+
+Function Name: swap  
+Purpose/Logic: A generic swap function which allows advanced “callback” style trading flows as described in the GenericRouter.  
+
+Function Name: constructor  
+Purpose/Logic: Initializes the contract with the references to wrapped native token (WETH). Sets up inherited functionalities such as limit order protocol and aggregator logic.  
+
+Function Name: rescueFunds  
+Purpose/Logic: Allows the contract owner to withdraw any ERC20 tokens mistakenly sent directly to the contract, preventing asset lock.  
+
+Function Name: destroy  
+Purpose/Logic: Destroys the contract, sending all remaining ETH to the owner. Intended only for emergency use.  
+
+Function Name: renounceOwnership  
+Purpose/Logic: Standard Ownable functionality to relinquish contract ownership, leaving no privileged owner.  
+
+Function Name: transferOwnership  
+Purpose/Logic: Standard Ownable functionality that assigns contract ownership to a new account.  
+
+Overall:  
+This AggregationRouterV5 contract merges multiple routers and limit order features into a single on-chain liquidity aggregator. It supports diverse swapping methods (Uniswap V2-like, Uniswap V3, Clipper), custom permit flows for gas optimization, complex limit and RFQ-style orders with advanced predicate logic, and a flexible callback system for integrators. It is designed to handle a wide range of DeFi aggregations, token trades, and permissions seamlessly."
+0x19c10fff96b80208f454034c046ccc4445cd20ba,"Function Name: constructor  
+This function initializes the AuctionMinter contract. It sets up roles (DEFAULT_ADMIN_ROLE and MANAGER_ROLE) for an admin address and the deployer, stores references to the gateway and NFT contract, designates who receives payment, sets the auction end time, and initializes the BidHeap with a specified capacity (the maximum number of winning bids).  
+
+Function Name: sendPayment  
+After the auction has ended, this function transfers payment to the designated payment recipient. The payment is calculated based on the lowest accepted bid price (the “floor bid”) multiplied by the number of winning bids in the heap. It also ensures payment is only sent once.  
+
+Function Name: emergencyWithdraw  
+Allows an administrator to withdraw the contract’s entire ETH balance in an emergency. This function can only be called by the holder of the DEFAULT_ADMIN_ROLE.  
+
+Function Name: setGateway  
+Allows an administrator (DEFAULT_ADMIN_ROLE) to update the address of the gateway contract, which is used to mint NFTs and handle certain permission checks.  
+
+Function Name: setRecipient  
+Allows an administrator (DEFAULT_ADMIN_ROLE) to update the address that will receive the auction proceeds.  
+
+Function Name: setNftAddress  
+Allows an account with MANAGER_ROLE to update the NFT contract address whose tokens will be minted after the auction concludes.  
+
+Function Name: setAuctionEndTime  
+Allows an account with MANAGER_ROLE to update the end time of the auction, as long as the new time is still in the future and the auction has not ended yet.  
+
+Function Name: placeBid  
+Allows a user to place a bid by sending ETH. A valid signature from the NFT manager (obtained through the gateway) is required to authenticate and apply bidding rules, such as user-specific or buyer limit constraints. The bid is stored in a min-heap structure so that only the highest bids remain if the capacity is reached.  
+
+Function Name: claimInfo  
+Returns information for a given user regarding how many NFTs they are eligible to claim and how much of a refund they should receive. This is based on comparing each user’s bids to the final floor bid from the min-heap.  
+
+Function Name: claimAndRefund  
+Allows a user to claim any winning NFTs and receive any excess amount of ETH sent beyond the floor price. Bids that did not win are fully refunded. It also verifies the user has not already claimed and ensures the auction is over.  
+
+Overall: This contract implements an auction-style minting flow in which users submit bids with ETH. A min-heap data structure is used to maintain the top bidders up to a fixed capacity. After the auction ends, winners pay the “floor” winning price, claim the minted NFTs, and receive refunds for leftover bid amounts, while losing bids are fully returned. The contract also provides administrative controls for withdrawing funds, adjusting configuration, and managing the auction’s parameters."
+0x4a220e6096b25eadb88358cb44068a3248254675,"Function Name: SafeMath  
+This library provides safe arithmetic operations (add, sub, mul, div) that revert on overflow or underflow conditions, ensuring secure math calculations throughout the token contract.
+
+Function Name: totalSupply  
+Returns the total number of tokens in existence. In this contract, it is stored in the variable totalSupply_ (initialized to 45,467,000 QNT, scaled by 10^18 for decimal places).
+
+Function Name: balanceOf  
+Returns the token balance of a specific address by checking the balances mapping.
+
+Function Name: transfer  
+Lets a token holder send a specified amount of tokens to another address. It decreases the sender’s balance and increases the recipient’s balance, using SafeMath to avoid overflow or underflow.
+
+Function Name: StandardToken (constructor)  
+Initializes the contract by setting the crowdsale address. This ensures that only the designated crowdsale contract can mint new tokens.
+
+Function Name: mint  
+Allows the crowdsale contract to create new tokens and assign them to a specified address. This can only be called by the crowdsale address, as enforced by the onlyCrowdsale modifier.
+
+Function Name: transferFrom  
+Allows an approved spender to transfer tokens from the owner’s address to another address. Ensures the spender cannot exceed the allowed amount or the owner’s balance.
+
+Function Name: approve  
+Grants a spender the ability to transfer a specified amount of the owner’s tokens. This sets the allowance in the allowed mapping.
+
+Function Name: allowance  
+Returns the amount of tokens a spender is still allowed to transfer from a particular owner’s address.
+
+Function Name: increaseApproval  
+Increases the amount of tokens a spender is allowed to transfer on the owner’s behalf. This helps to avoid race conditions seen when resetting allowances to zero first.
+
+Function Name: decreaseApproval  
+Decreases the amount of tokens a spender is allowed to transfer on the owner’s behalf, reverting to zero if the subtraction would go below zero.
+
+Overall:  
+This contract implements a standard ERC20 token with safe math operations. It defines the basic token mechanics (balances, total supply, transfers) and extends them to include allowances for delegating transfer capability, as well as a controlled minting function available only to the designated crowdsale contract."
+0x0000000000a39bb272e79075ade125fd351887ac,"Function Name: _delegate  
+Explanation: This internal function in the “Proxy” contract handles the low-level delegatecall to the implementation contract. It copies the calldata, invokes delegatecall with all available gas, and returns or reverts based on the delegatecall’s result.  
+
+Function Name: _implementation (Proxy)  
+Explanation: An abstract function in the “Proxy” contract that must be overridden to return the address of the logic contract to which calls should be delegated.  
+
+Function Name: _fallback  
+Explanation: An internal function in “Proxy” that prepares any needed state (via _beforeFallback) and then calls _delegate using the address returned by _implementation.  
+
+Function Name: fallback()  
+Explanation: A Solidity fallback function that triggers whenever a call does not match any other function signature. It delegates execution to the implementation via _fallback.  
+
+Function Name: receive()  
+Explanation: A special function triggered when the contract receives Ether with empty calldata. Like fallback(), it delegates execution to the implementation contract via _fallback.  
+
+Function Name: _beforeFallback  
+Explanation: A hook that executes each time before falling back to the implementation. By default, it does nothing, but derived contracts can override it for custom logic.  
+
+Function Name: _getImplementation  
+Explanation: Defined in “ERC1967Upgrade,” it reads the current implementation address from a standardized EIP1967 storage slot.  
+
+Function Name: _setImplementation  
+Explanation: A private function in “ERC1967Upgrade” that writes a new implementation address into the EIP1967 storage slot after ensuring the new address is a valid contract.  
+
+Function Name: _upgradeTo  
+Explanation: Upgrades the proxy to a new implementation by calling _setImplementation, then emits the “Upgraded” event.  
+
+Function Name: _upgradeToAndCall  
+Explanation: Similar to _upgradeTo but also includes an optional call (data) to the newly set implementation, allowing initialization or configuration in the same transaction.  
+
+Function Name: _upgradeToAndCallSecure  
+Explanation: Performs an upgrade with an additional rollback check for UUPS proxies. It sets the new implementation, optionally calls initialization code, triggers a rollback test, and finally reaffirms the upgrade if it passes.  
+
+Function Name: _getAdmin  
+Explanation: Retrieves the current admin address of the proxy from its corresponding EIP1967 storage slot.  
+
+Function Name: _setAdmin  
+Explanation: Writes a new admin address into the EIP1967 admin storage slot, ensuring it’s not the zero address.  
+
+Function Name: _changeAdmin  
+Explanation: Emits an “AdminChanged” event and updates the proxy’s admin address.  
+
+Function Name: _getBeacon  
+Explanation: Returns the current beacon address from its EIP1967 storage slot.  
+
+Function Name: _setBeacon  
+Explanation: Stores a new beacon address and validates that the beacon’s implementation is also a valid contract.  
+
+Function Name: _upgradeBeaconToAndCall  
+Explanation: Upgrades the beacon’s address (not the implementation inside the beacon) and optionally calls setup code on the new beacon’s implementation.  
+
+Function Name: constructor (ERC1967Proxy)  
+Explanation: Initializes the proxy with an initial logic (implementation) address and optionally executes a delegatecall to perform any required setup on that implementation.  
+
+Function Name: _implementation (ERC1967Proxy)  
+Explanation: The concrete override of Proxy’s _implementation function, returning the address stored in the EIP1967 implementation slot.  
+
+Function Name: IBeacon (interface)  
+Explanation: Defines a single function “implementation()” that must return a contract address; used by proxies that follow the Beacon pattern.  
+
+Function Name: Address (library)  
+Explanation: Contains utility functions for low-level contract interactions such as isContract, sendValue, functionCall, functionDelegateCall, and helpers to safely handle call results.  
+
+Function Name: StorageSlot (library)  
+Explanation: Provides structured read/write operations for specific storage slots (address, bool, bytes32, uint256) to mitigate naming conflicts in upgradeable contracts.  
+
+Overall:  
+This suite of contracts and libraries implements a robust, upgradeable proxy system (ERC1967). The “Proxy” contract redirects calls via delegatecall to the current implementation. “ERC1967Upgrade” manages the storage slots (implementation, admin, beacon) and defines secure upgrade mechanisms. “ERC1967Proxy” ties these components together, enabling a contract to be deployed once and upgraded over time, while libraries like “Address” and “StorageSlot” provide low-level utilities for safe and consistent upgrades."
