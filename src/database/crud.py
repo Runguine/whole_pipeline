@@ -129,12 +129,12 @@ def get_user_interactions(db: Session, limit: int = 1000):
     """
     获取用户交互数据
     :return: [
-        {caller_contract, method_name, block_number, tx_hash, timestamp},
+        {caller_contract, method_name, block_number, tx_hash, timestamp, input_data},
         ...
     ]
     """
     interactions = (
-        db.query(UserInteraction)  # 假设存在UserInteraction模型
+        db.query(UserInteraction)
         .order_by(desc(UserInteraction.timestamp))
         .limit(limit)
         .all()
@@ -145,7 +145,8 @@ def get_user_interactions(db: Session, limit: int = 1000):
         "method_name": i.method_name,
         "block_number": i.block_number,
         "tx_hash": i.tx_hash,
-        "timestamp": i.timestamp
+        "timestamp": i.timestamp,
+        "input_data": i.input_data
     } for i in interactions]
 
 

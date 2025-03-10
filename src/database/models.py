@@ -26,4 +26,4 @@ class UserInteraction(Base):
     block_number = Column(BigInteger, nullable=False)
     tx_hash = Column(String(66), unique=True)
     timestamp = Column(TIMESTAMP)
-    input_data = Column(String(255))
+    input_data = Column(String)  # 新增字段，存储交易的input data
