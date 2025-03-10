@@ -51,7 +51,8 @@ PRELIMINARY_ANALYSIS_PROMPT = """
 """
 
 FINAL_REPORT_PROMPT = """
-结合以下分析生成最终安全报告：
+基于以下信息生成深度安全分析报告：
+
 # 初步事件分析
 {preliminary_analysis}
 
@@ -59,28 +60,36 @@ FINAL_REPORT_PROMPT = """
 {behavior_analysis}
 
 报告要求：
-1. 关联合约行为与安全事件
-2. 确认漏洞利用的技术细节
-3. 完整的攻击链条还原
-4. 资金追踪方案建议
-5. 安全防护改进建议
+1. 综合分析目标合约和相关合约的安全状况
+2. 识别所有参与的合约地址及其角色
+3. 分析合约间的调用关系和依赖关系
+4. 完整还原可能的攻击链条
+5. 提供具体的安全改进建议
 
 格式要求：
-## 最终安全分析报告
+## 深度安全分析报告
+
 ### 事件概述
-[包含时间、涉及金额等关键信息]
+[包含时间、涉及合约、交互模式等关键信息]
 
-### 技术分析
-[合约调用与漏洞的对应关系]
+### 合约分析
+1. 目标合约
+   [详细分析]
 
-### 攻击链条还原
-[按时间顺序的步骤分析]
+2. 相关合约
+   [各合约分析及其关系]
 
-### 资金追踪
-[地址列表和追踪建议]
+### 交互分析
+[详细的调用关系和行为模式分析]
 
-### 防护建议
-[针对性的改进方案]
+### 漏洞分析
+[发现的安全问题及潜在风险]
+
+### 攻击链重现
+[可能的攻击路径和步骤]
+
+### 安全建议
+[具体的防护措施和改进方案]
 """
 
 def parse_user_query(user_input):
@@ -123,10 +132,10 @@ from config.settings import settings
 
 BEHAVIOR_PROMPT = """
 作为区块链行为分析专家，请完成以下任务：
-1. 分析用户调用的方法在合约代码中的具体功能（包括代理合约逻辑）
+1. 分析目标合约和相关合约的代码实现（包括代理合约逻辑）
 2. 结合调用频率和input_data解释用户行为模式
-3. 如果是标准ERC-20方法但未在源码中找到实现，请按标准规范分析
-4. 识别潜在安全问题
+3. 分析合约之间的调用关系和交互模式
+4. 识别可能的漏洞和安全风险
 5. 分析input_data中包含的地址和参数信息
 
 合约代码信息：
@@ -139,21 +148,36 @@ BEHAVIOR_PROMPT = """
 {input_data_analysis}
 
 输出格式：
-### 高频方法分析
-1. 方法名称：[方法名]
+### 合约代码分析
+1. 目标合约分析
+   - 合约类型：[代理合约/实现合约/普通合约]
+   - 主要功能：[功能描述]
+   - 关键方法：[方法列表及说明]
+
+2. 相关合约分析
+   - 合约地址：[地址]
+   - 合约类型：[类型]
+   - 与目标合约的关系：[调用关系/依赖关系]
+
+### 交互行为分析
+1. 高频方法分析
+   - 方法名称：[方法名]
    - 调用次数：[次数]
-   - 功能描述：[LLM分析]
-   - 代码来源：[主合约/代理合约/标准ERC20]
-   - 参数分析：[基于input_data的参数解析]
+   - 功能描述：[分析]
+   - 参数分析：[基于input_data的解析]
 
-### 相关地址分析
-[分析从input_data中提取的地址的角色和行为]
+2. 合约间调用关系
+   [分析合约之间的调用链和依赖关系]
 
-### 用户行为总结
-[用200字总结用户行为模式]
+### 安全风险评估
+1. 代码层面风险
+   [分析代码中的潜在漏洞]
 
-### 合约安全评估
-[分析潜在风险和安全建议]
+2. 交互层面风险
+   [分析交互模式中的异常]
+
+3. 权限管理风险
+   [分析权限控制机制]
 """
 
 from openai import OpenAI
@@ -336,7 +360,54 @@ def analyze_input_data(input_data, abi):
         'params': params
     }
 
-def analyze_behavior_new(target_contract=None, start_block=None, end_block=None):
+def process_user_query(params):
+    """
+    处理用户查询
+    params: 包含以下字段的字典
+        - contract_address: 合约地址
+        - start_block: 起始区块
+        - end_block: 结束区块
+        - analysis_type: 分析类型
+        - related_addresses: 相关地址列表（包括交互地址和input_data中的地址）
+        - user_input: 用户原始输入
+    """
+    # 参数验证
+    if not params.get('contract_address'):
+        raise ValueError("缺少合约地址参数")
+    
+    # 生成初步分析
+    print("\n=== 生成初步分析 ===")
+    # 添加用户原始输入到参数中
+    params_with_input = {
+        **params,
+        "user_input": params.get("user_input", ""),
+        "event_name": "区块链安全分析"  # 默认事件名称
+    }
+    preliminary = generate_preliminary_analysis(params_with_input)
+    
+    # 分析目标合约及相关合约的行为
+    print("\n=== 分析合约行为 ===")
+    behavior = analyze_behavior_new(
+        params['contract_address'], 
+        params.get('start_block', 0),
+        params.get('end_block', 0),
+        params.get('related_addresses', [])  # 传入相关地址列表
+    )
+    
+    # 检查行为分析是否有效
+    if behavior == "在指定区块范围内未发现任何交互":
+        return behavior
+    
+    # 生成最终深度分析报告
+    print("\n=== 生成深度分析报告 ===")
+    final_report = generate_final_report(
+        preliminary, 
+        behavior
+    )
+    
+    return final_report
+
+def analyze_behavior_new(target_contract=None, start_block=None, end_block=None, related_addresses=None):
     """
     增强版行为分析函数
     """
@@ -344,12 +415,21 @@ def analyze_behavior_new(target_contract=None, start_block=None, end_block=None)
     
     # 获取并过滤用户交互数据
     interactions = get_user_interactions(db)
-    filtered = [
-        i for i in interactions 
-        if (not target_contract or i['target_contract'] == target_contract) and
-           (not start_block or i['block_number'] >= start_block) and
-           (not end_block or i['block_number'] <= end_block)
-    ]
+    
+    # 过滤目标合约和相关地址的交互
+    filtered = []
+    for i in interactions:
+        # 检查是否在区块范围内
+        if start_block and i['block_number'] < start_block:
+            continue
+        if end_block and i['block_number'] > end_block:
+            continue
+            
+        # 检查是否与目标合约或相关地址有关
+        if (i['target_contract'].lower() == target_contract.lower() or
+            i['target_contract'].lower() in [addr.lower() for addr in (related_addresses or [])] or
+            i['caller_contract'].lower() in [addr.lower() for addr in (related_addresses or [])]):
+            filtered.append(i)
     
     # 如果没有交互数据，返回提示信息
     if not filtered:
@@ -359,22 +439,29 @@ def analyze_behavior_new(target_contract=None, start_block=None, end_block=None)
     method_counter = Counter([i['method_name'] for i in filtered])
     sorted_methods = method_counter.most_common(10)
     
-    # 加载合约代码
-    all_contracts = set(i['target_contract'] for i in filtered)
+    # 加载所有相关合约代码（包括目标合约和相关地址）
+    all_contracts = {target_contract.lower()}  # 从目标合约开始
+    all_contracts.update(addr.lower() for addr in (related_addresses or []))  # 添加相关地址
+    
     contracts_code = {}
     for contract in all_contracts:
-        contracts_code[contract] = load_contract_code(db, contract)
+        chain = load_contract_code(db, contract)
+        if chain:  # 只添加有代码的合约
+            contracts_code[contract] = chain
     
     # 分析重要交易的input_data
     important_txs = []
-    for interaction in filtered[:5]:  # 分析最近的5笔交易
+    for interaction in filtered[:10]:  # 分析最近的10笔交易
         if interaction.get('input_data'):
-            contract_chain = contracts_code.get(interaction['target_contract'], [])
+            contract_chain = contracts_code.get(interaction['target_contract'].lower(), [])
             abi = contract_chain[0].get('abi') if contract_chain else None
             
             analysis = analyze_input_data(interaction['input_data'], abi)
             important_txs.append({
                 'tx_hash': interaction['tx_hash'],
+                'target_contract': interaction['target_contract'],
+                'caller_contract': interaction['caller_contract'],
+                'block_number': interaction['block_number'],
                 'analysis': analysis
             })
     
@@ -391,18 +478,9 @@ def analyze_behavior_new(target_contract=None, start_block=None, end_block=None)
     )
     
     input_data_analysis = "\n".join([
-        f"交易 {tx['tx_hash']}:\n{json.dumps(tx['analysis'], indent=2)}"
+        f"交易 {tx['tx_hash']} (调用者: {tx['caller_contract']}, 目标: {tx['target_contract']}, 区块: {tx['block_number']}):\n{json.dumps(tx['analysis'], indent=2)}"
         for tx in important_txs
     ])
-    
-    # 检测ERC20方法
-    erc20_methods = {
-        'transfer', 'transferFrom', 'approve', 
-        'balanceOf', 'allowance', 'totalSupply'
-    }
-    detected_erc20 = erc20_methods & set(method_counter.keys())
-    if detected_erc20:
-        code_context += "\n\n检测到标准ERC-20方法：" + ", ".join(detected_erc20)
     
     # 生成分析报告
     full_prompt = BEHAVIOR_PROMPT.format(
@@ -413,112 +491,6 @@ def analyze_behavior_new(target_contract=None, start_block=None, end_block=None)
     
     return request_ds(full_prompt, "")
 
-
-def process_user_query(params):
-    """
-    处理用户查询
-    params: 包含以下字段的字典
-        - contract_address: 合约地址
-        - start_block: 起始区块
-        - end_block: 结束区块
-        - analysis_type: 分析类型
-        - related_addresses: 相关地址列表
-        - preliminary_analysis: 初步分析结果（可选）
-    """
-    db = next(get_db())
-    
-    # 1. 获取目标合约信息
-    target_contract_info = get_contract_full_info(db, params['contract_address'])
-    if not target_contract_info:
-        return "未找到目标合约信息"
-    
-    # 2. 获取所有相关合约信息
-    related_contracts = {}
-    if params.get('related_addresses'):
-        for addr in params['related_addresses']:
-            contract_info = get_contract_full_info(db, addr)
-            if contract_info:  # 只收集合约地址的信息
-                related_contracts[addr] = contract_info
-    
-    # 3. 获取交互历史
-    interactions = get_user_interactions(db)
-    filtered_interactions = [
-        i for i in interactions 
-        if (i['target_contract'] == params['contract_address']) and
-           (not params.get('start_block') or i['block_number'] >= params['start_block']) and
-           (not params.get('end_block') or i['block_number'] <= params['end_block'])
-    ]
-    
-    # 4. 生成完整的分析上下文
-    analysis_context = {
-        "target_contract": {
-            "address": params['contract_address'],
-            "info": target_contract_info
-        },
-        "related_contracts": related_contracts,
-        "interactions": filtered_interactions,
-        "preliminary_analysis": params.get('preliminary_analysis', '')
-    }
-    
-    # 5. 根据分析类型选择不同的处理流程
-    if params.get('analysis_type') == 'contract_analysis':
-        return analyze_contracts_only(analysis_context)
-    
-    # 6. 生成完整分析报告
-    preliminary = generate_preliminary_analysis(params)
-    behavior = analyze_behavior_new(
-        params['contract_address'],
-        params.get('start_block'),
-        params.get('end_block')
-    )
-    
-    final_report = generate_final_report(
-        preliminary if not params.get('preliminary_analysis') else params['preliminary_analysis'],
-        behavior
-    )
-    
-    return final_report
-
-def analyze_contracts_only(context):
-    """仅分析合约代码的函数"""
-    # 构建合约分析提示词
-    prompt = """作为智能合约安全专家，请分析以下合约：
-
-目标合约信息：
-{target_info}
-
-相关合约信息：
-{related_info}
-
-请重点关注：
-1. 合约功能和架构
-2. 代理合约关系
-3. 潜在安全漏洞
-4. 合约间的交互风险
-
-输出格式：
-### 合约架构分析
-[分析合约的整体架构和主要功能]
-
-### 安全风险评估
-[详细列出发现的潜在安全问题]
-
-### 改进建议
-[具体的安全加固建议]
-"""
-    
-    # 准备合约信息
-    target_info = json.dumps(context['target_contract'], indent=2)
-    related_info = json.dumps(context['related_contracts'], indent=2)
-    
-    # 生成分析报告
-    return request_ds(
-        prompt.format(
-            target_info=target_info,
-            related_info=related_info
-        ),
-        ""
-    )
 
 def analyze_behavior(target_contract=None):
     db = next(get_db())

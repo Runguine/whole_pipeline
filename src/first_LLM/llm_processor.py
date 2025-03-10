@@ -57,7 +57,8 @@ class LLMQueryProcessor:
                 "token_identifier": address,
                 "time_range_hint": "1小时",
                 "analysis_focus": ["合约分析"] if is_contract_analysis else ["资金流向"],
-                "analysis_type": "contract_analysis" if is_contract_analysis else "transaction_analysis"
+                "analysis_type": "contract_analysis" if is_contract_analysis else "transaction_analysis",
+                "user_input": user_input  # 保存原始用户输入
             }, {
                 'address': address,
                 'start_block': 0,
@@ -67,6 +68,7 @@ class LLMQueryProcessor:
             
         # 第一步：LLM结构化解析
         llm_result = self._get_structured_parse(user_input)
+        llm_result["user_input"] = user_input  # 保存原始用户输入
         
         # 第二步：RAG检索
         token_data, block_range = RAG_INSTANCE.search_with_block_range(
@@ -79,14 +81,16 @@ class LLMQueryProcessor:
                 'address': None,
                 'start_block': 0,
                 'end_block': 0,
-                'raw_data': None
+                'raw_data': None,
+                'user_input': user_input  # 保存原始用户输入
             }
             
         return llm_result, {
             'address': token_data['id'] if token_data else None,
             'start_block': block_range[0],
             'end_block': block_range[1],
-            'raw_data': token_data
+            'raw_data': token_data,
+            'user_input': user_input  # 保存原始用户输入
         }
 
     def _get_structured_parse(self, text: str) -> Dict:

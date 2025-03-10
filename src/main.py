@@ -20,7 +20,7 @@ from ethereum.abi_fetcher import get_contract_metadata, process_contract_metadat
 from database.crud import upsert_contract
 
 from first_LLM.llm_processor import LLMQueryProcessor
-from analyze_user_behavior import process_user_query
+from analyze_user_behavior import process_user_query, request_ds
 
 
 load_dotenv()
@@ -376,7 +376,7 @@ class ContractAnalyzer:
                     
         return addresses
 
-    def execute_full_analysis(self, address: str, start: int, end: int, analysis_type: str = "transaction_analysis"):
+    def execute_full_analysis(self, address: str, start: int, end: int, analysis_type: str = "transaction_analysis", user_input: str = ""):
         """全流程入口（集成原有逻辑）"""
         # 初始化处理管道
         pipeline = ContractPipeline()
@@ -393,13 +393,35 @@ class ContractAnalyzer:
         
         # 步骤3：触发深度分析
         print("\n=== 步骤3：生成深度分析 ===")
-        return process_user_query({
+        analysis_result = process_user_query({
             "contract_address": address,
             "start_block": start,
             "end_block": end,
             "analysis_type": analysis_type,
-            "related_addresses": list(related_addresses)  # 传入相关地址列表
+            "related_addresses": list(related_addresses),  # 传入相关地址列表
+            "user_input": user_input  # 传入原始用户输入
         })
+        
+        # 检查是否获得了有意义的深度分析
+        if "在指定区块范围内未发现任何交互" in analysis_result or len(analysis_result) < 200:
+            print("\n=== 未获得足够的深度分析信息，生成直接回答 ===")
+            from analyze_user_behavior import request_ds
+            
+            direct_answer_prompt = f"""
+            作为区块链安全分析专家，请直接回答用户的问题。
+            
+            我们已经分析了合约 {address}，但未能获取足够的交互数据或相关信息进行深度分析。
+            请基于合约地址和用户问题提供一般性的专业回答。
+            
+            用户问题：{user_input}
+            目标合约：{address}
+            
+            请提供专业、准确的回答，包括可能的安全建议或分析方向。
+            """
+            
+            return request_ds(direct_answer_prompt, "")
+        
+        return analysis_result
 
 
 if __name__ == "__main__":
@@ -409,8 +431,23 @@ if __name__ == "__main__":
     processor = LLMQueryProcessor()
     llm_params, rag_data = processor.parse_query(user_input)
     
+    # 如果无法解析出地址，直接使用LLM回答
     if not rag_data['address']:
-        print("未找到相关代币信息")
+        print("\n=== 无法解析具体合约地址，直接回答用户问题 ===")
+        from analyze_user_behavior import request_ds
+        
+        direct_answer_prompt = f"""
+        作为区块链安全分析专家，请直接回答用户的问题。由于无法识别具体的合约地址或区块范围，
+        请基于你的知识提供一般性的回答。
+        
+        用户问题：{user_input}
+        
+        请提供专业、准确的回答，包括可能的安全建议或分析方向。
+        """
+        
+        answer = request_ds(direct_answer_prompt, "")
+        print("\n=== 回答 ===")
+        print(answer)
         exit()
     
     # 打印分析信息（方便调试）
@@ -427,7 +464,8 @@ if __name__ == "__main__":
         rag_data['address'],
         rag_data['start_block'],
         rag_data['end_block'],
-        llm_params.get('analysis_type', 'transaction_analysis')  # 传入分析类型
+        llm_params.get('analysis_type', 'transaction_analysis'),  # 传入分析类型
+        user_input  # 传入原始用户输入，用于生成直接回答
     )
     
     # 第三步：输出结果
