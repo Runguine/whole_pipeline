@@ -14,4 +14,25 @@ class Settings:
     MODELNAME = os.getenv("MODELNAME")
     DATASET_PROMPT = os.getenv("DATASET_PROMPT")
 
+    # Base Network配置
+    BASE_RPC_URL = "https://mainnet.base.org"
+    BASE_ETHERSCAN_URL = "https://api.etherscan.io/v2/api?chainid=8453"
+    BASE_ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY", "")  # 使用与以太坊相同的API Key
+    
+    # 网络配置
+    NETWORKS = {
+        "ethereum": {
+            "rpc_url": ALCHEMY_ENDPOINT,
+            "explorer_url": "https://api.etherscan.io/api",
+            "explorer_key": ETHERSCAN_API_KEY,
+            "chain_id": 1
+        },
+        "base": {
+            "rpc_url": BASE_RPC_URL,
+            "explorer_url": BASE_ETHERSCAN_URL,
+            "explorer_key": ETHERSCAN_API_KEY,  # 使用与以太坊相同的API Key
+            "chain_id": 8453
+        }
+    }
+
 settings = Settings()

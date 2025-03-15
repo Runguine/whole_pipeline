@@ -9,7 +9,10 @@ CREATE TABLE IF NOT EXISTS users (
     block_number BIGINT NOT NULL,
     tx_hash VARCHAR(66) NOT NULL,
     timestamp TIMESTAMP NOT NULL,
-    input_data VARCHAR(255)
+    input_data VARCHAR(10000),
+    event_logs JSON,
+    trace_data JSON,
+    network VARCHAR(20)
 );
 
 CREATE INDEX idx_target_contract ON users (target_contract);
@@ -22,10 +25,12 @@ CREATE TABLE IF NOT EXISTS whole_pipeline (
     abi JSON,
     c_name VARCHAR(42),
     source_code JSON,
-    bytecode VARCHAR(255),
+    bytecode VARCHAR(100000),
     decompiled_code JSON,
     is_proxy Boolean NOT NULL,
-    parent_address VARCHAR(42)
+    parent_address VARCHAR(42),
+    network VARCHAR(20),
+    created_at TIMESTAMP
 );
 
 CREATE INDEX idx_target_contract_pipeline ON whole_pipeline (target_contract);

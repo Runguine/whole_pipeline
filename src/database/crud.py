@@ -52,13 +52,24 @@ def get_contract_full_info(db: Session, address: str):
     if not contract:
         return None
     
+    # 处理 decompiled_code 字段 - 如果是字符串且看起来是JSON，尝试解析它
+    decompiled_code = contract.decompiled_code
+    if isinstance(decompiled_code, str):
+        try:
+            import json
+            if decompiled_code.strip().startswith('{'):
+                decompiled_code = json.loads(decompiled_code)
+        except:
+            # 如果解析失败，保持原样
+            pass
+    
     result = {
         "address": contract.target_contract,
         "is_proxy": contract.is_proxy,
         "parent_address": contract.parent_address,
         "source_code": contract.source_code,
         "abi": contract.abi,
-        "decompiled_code": contract.decompiled_code
+        "decompiled_code": decompiled_code
     }
     
     # 递归获取父合约信息（最多3层）

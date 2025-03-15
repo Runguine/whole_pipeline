@@ -1,5 +1,7 @@
 import sys
 import os
+import time
+import traceback  # 用于打印详细的错误堆栈
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'config')))
 
@@ -14,13 +16,14 @@ from dotenv import load_dotenv
 from ethereum.bytecode_fetcher import get_bytecode
 from ethereum.decompiler.gigahorse_wrapper import decompile_bytecode
 from database import get_db
-from database.crud import update_bytecode, update_decompiled_code
-from database.models import Contract
+from database.crud import update_bytecode, update_decompiled_code, get_contract_full_info as db_get_contract_full_info
+from database.models import Contract,UserInteraction
 from ethereum.abi_fetcher import get_contract_metadata, process_contract_metadata
 from database.crud import upsert_contract
 
 from first_LLM.llm_processor import LLMQueryProcessor
 from analyze_user_behavior import process_user_query, request_ds
+from config.settings import settings
 
 
 load_dotenv()
@@ -49,30 +52,53 @@ def lookup_method_from_4byte(selector):
 
 
 class ContractPipeline:
-    def __init__(self):
-        self.analyzer = ContractAnalyzer()
+    def __init__(self, analyzer):
+        self.analyzer = analyzer
         self.db = next(get_db())
 
     def process_with_metadata(self, address: str):
         """增强的合约处理流程（保留元数据存储）"""
         # 处理代理链
-        self.analyzer.process_contract(address)
+        contract_info = self.analyzer.process_contract(address)
         
-        # 获取并存储元数据
-        metadata = get_contract_metadata(address)
-        if not metadata:
-            print("未验证合约")
-            return
+        # 如果已经在数据库中找到合约信息，则不需要再获取元数据
+        if contract_info and contract_info.get('address') == address.lower():
+            print(f"已从数据库获取到合约 {address} 的信息，跳过元数据获取")
+            return contract_info
         
-        processed = process_contract_metadata(metadata)
-        contract_data = {
-            "target_contract": address.lower(),
-            **processed
-        }
-        
-        # 更新数据库（关键保留部分）
-        upsert_contract(self.db, contract_data)
-        print(f"已存储 {address} 的ABI和源代码")
+        # 获取并存储元数据（使用当前网络配置）
+        network_config = settings.NETWORKS[self.analyzer.current_network]
+        try:
+            url = f"{network_config['explorer_url']}?module=contract&action=getsourcecode&address={address}&apikey={network_config['explorer_key']}"
+            response = requests.get(url)
+            response_data = response.json()
+            
+            # 检查响应格式
+            if isinstance(response_data, dict) and response_data.get('status') == '1' and response_data.get('result'):
+                metadata_list = response_data.get('result', [])
+                if metadata_list and isinstance(metadata_list, list) and len(metadata_list) > 0:
+                    metadata = metadata_list[0]
+                    if metadata and isinstance(metadata, dict) and metadata.get('SourceCode'):
+                        processed = process_contract_metadata(metadata)
+                        contract_data = {
+                            "target_contract": address.lower(),
+                            "network": self.analyzer.current_network,  # 添加网络信息
+                            **processed
+                        }
+                        
+                        # 更新数据库
+                        upsert_contract(self.db, contract_data)
+                        print(f"已存储 {address} 的ABI和源代码")
+                    else:
+                        print("未验证合约或元数据格式不正确")
+                else:
+                    print("API返回的结果列表为空或格式不正确")
+            else:
+                print(f"API返回数据格式不正确: {response_data}")
+        except Exception as e:
+            print(f"获取元数据失败: {str(e)}")
+            # 打印详细的错误信息和堆栈跟踪
+            traceback.print_exc()
 
 
 
@@ -80,56 +106,83 @@ class ContractPipeline:
 
 class ContractAnalyzer:
     def __init__(self):
-        self.w3 = Web3(Web3.HTTPProvider(os.getenv("ALCHEMY_URL")))
+        # 只保留以太坊网络的Web3实例
+        self.w3_instances = {
+            "ethereum": Web3(Web3.HTTPProvider(settings.NETWORKS["ethereum"]["rpc_url"]))
+        }
+        self.current_network = "ethereum"  # 固定为以太坊网络
         self.abi_cache = {}
         self.processed_contracts = set()
         self.max_recursion_depth = 3
-        self.decompiler_enabled = True  # 反编译开关
-        
+        self.decompiler_enabled = True
+        self.current_level = 0  # 添加递归深度跟踪
+        self.db = next(get_db())  # 添加数据库连接
+    
+    @property
+    def w3(self):
+        """获取当前网络的Web3实例"""
+        return self.w3_instances["ethereum"]
+
     def get_contract_abi(self, address):
-        """带缓存的ABI获取方法"""
-        address = address.lower()
-        if address not in self.abi_cache:
+        """带缓存的ABI获取方法，支持多网络"""
+        cache_key = f"{self.current_network}_{address.lower()}"
+        if cache_key not in self.abi_cache:
             try:
-                url = f"https://api.etherscan.io/api?module=contract&action=getabi&address={address}&apikey={os.getenv('ETHERSCAN_API_KEY')}"
+                network_config = settings.NETWORKS[self.current_network]
+                url = f"{network_config['explorer_url']}?module=contract&action=getabi&address={address}&apikey={network_config['explorer_key']}"
                 response = requests.get(url)
-                self.abi_cache[address] = json.loads(response.json()['result'])
+                self.abi_cache[cache_key] = json.loads(response.json()['result'])
             except Exception as e:
                 print(f"获取ABI失败: {str(e)}")
-                self.abi_cache[address] = []
-        return self.abi_cache[address]
+                self.abi_cache[cache_key] = []
+        return self.abi_cache[cache_key]
     
     def get_method_name(self, contract_address, input_data):
-        """
-        解析 method_name：
-        1. 先尝试基于 ABI 解析
-        2. 如果 ABI 解析失败，则查询 4-byte 选择器数据库
-        3. 如果 4-byte 也失败，则使用反编译代码
-        """
-        db = next(get_db())
-        contract = db.query(Contract).filter(Contract.target_contract == contract_address.lower()).first()
-
-        # **1. 使用 ABI 解析**
-        if contract and contract.abi:
-            try:
-                contract_obj = self.w3.eth.contract(address=contract_address, abi=contract.abi)
-                func_obj, _ = contract_obj.decode_function_input(input_data[:4].hex())
-                return func_obj.fn_name  # 直接返回解析成功的函数名
-            except:
-                pass  # 解析失败，继续查询 4-byte
-
-        # **2. 4-byte 选择器数据库**
-        selector = input_data[:4].hex()  # 获取前 4 字节，形如 "0xa9059cbb"
-        url = f"https://api.openchain.xyz/signature-database/v1/lookup?function={selector}"
-        response = requests.get(url).json()
-        if response["ok"] and response["result"]["function"] and selector in response["result"]["function"]:
-            return response["result"]["function"][selector][0]["name"]
-
-        # **3. 反编译代码**
-        if contract and contract.decompiled_code:
-            return f"Unknown_{selector} (from decompiled code)"
-
-        return f"Unknown_{selector} (unresolved)"  # 返回前10位作为fallback
+        """获取方法名称（从ABI或4byte目录）"""
+        if not input_data or len(input_data) < 8:
+            return "unknown"
+        
+        # 确保input_data格式正确
+        if isinstance(input_data, bytes):
+            selector = input_data[:4].hex()
+        else:
+            # 如果是字符串，确保没有0x前缀
+            if input_data.startswith('0x'):
+                input_data = input_data[2:]
+            selector = input_data[:8]
+        
+        # 确保selector格式正确
+        if len(selector) == 8:
+            selector_with_prefix = '0x' + selector
+        else:
+            selector_with_prefix = selector
+        
+        # 首先尝试从ABI获取
+        try:
+            # 确保合约地址是校验和格式
+            checksum_address = Web3.to_checksum_address(contract_address)
+            
+            abi = self.get_contract_abi(checksum_address)
+            if abi:
+                contract = self.w3.eth.contract(address=checksum_address, abi=abi)
+                for func in contract.functions:
+                    if func.function_signature_hash == selector_with_prefix:
+                        return func.fn_name
+        except Exception as e:
+            print(f"从ABI获取方法名称失败: {str(e)}")
+        
+        # 然后尝试从4byte目录获取
+        try:
+            url = f"https://www.4byte.directory/api/v1/signatures/?hex_signature={selector_with_prefix}"
+            response = requests.get(url, timeout=5).json()
+            
+            if response.get('results') and len(response['results']) > 0:
+                return response['results'][0]['text_signature'].split('(')[0]
+        except Exception as e:
+            print(f"从4byte目录获取方法名称失败: {str(e)}")
+        
+        # 如果都失败了，返回选择器
+        return f"0x{selector}"
 
 
     def detect_proxy(self, contract_address):
@@ -230,166 +283,536 @@ class ContractAnalyzer:
 
         return False, None
 
-    def process_contract(self, address, depth=0, parent_address=None):
-        """改进后的合约处理逻辑"""
-        if depth > self.max_recursion_depth:
-            print(f"达到最大递归深度 {self.max_recursion_depth}")
-            return
-
-        address = Web3.to_checksum_address(address)
-        if address.lower() in self.processed_contracts:
-            return
-
-        print(f"\n处理合约: {address} (层级: {depth})")
-        self.processed_contracts.add(address.lower())
-
-        # 检测代理状态
-        is_proxy, logic_address = self.detect_proxy(address)
+    def get_contract_metadata(self, address):
+        """获取合约元数据"""
+        max_retries = 3
+        retry_delay = 2
         
-        # 准备基础数据
-        contract_data = {
-            "target_contract": address.lower(),
-            "is_proxy": is_proxy,
-            "parent_address": parent_address.lower() if parent_address else None,
+        # 打印网络配置信息（调试用）
+        network_config = settings.NETWORKS[self.current_network]
+        #print(f"\n当前网络配置:")
+        #print(f"网络: {self.current_network}")
+        #print(f"浏览器API: {network_config['explorer_url']}")
+        #print(f"API Key长度: {len(network_config['explorer_key']) if network_config['explorer_key'] else 0}")
+        
+        if not network_config['explorer_key']:
+            print(f"警告: {self.current_network} 网络的API Key未设置")
+            return {
+                'ABI': '[]',
+                'SourceCode': '',
+                'ContractName': f'Contract_{address[:8]}'
+            }
+        
+        for attempt in range(max_retries):
+            try:
+                # 构建URL - 注意Base网络使用的是完整URL，不需要添加额外参数
+                if "chainid=" in network_config['explorer_url']:
+                    # 已经包含chainid参数的URL (如Base网络)
+                    url = f"{network_config['explorer_url']}&module=contract&action=getsourcecode&address={address}&apikey={network_config['explorer_key']}"
+                else:
+                    # 标准URL (如以太坊主网)
+                    url = f"{network_config['explorer_url']}?module=contract&action=getsourcecode&address={address}&apikey={network_config['explorer_key']}"
+                
+                print(f"\n尝试获取合约元数据 (尝试 {attempt + 1}/{max_retries})")
+                #print(f"请求URL: {url}")
+                
+                response = requests.get(url)
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    # 打印完整的响应数据（调试用）
+                    #print(f"API响应: {data}")
+                    
+                    # 检查数据类型并适当处理
+                    if isinstance(data, str):
+                        try:
+                            import json
+                            data = json.loads(data)
+                        except:
+                            print("无法解析字符串响应为JSON")
+                            data = {"status": "0", "result": []}
+                    
+                    # 检查响应格式
+                    if isinstance(data, dict) and data.get('status') == '1' and data.get('result'):
+                        result = data['result']
+                        if isinstance(result, list) and len(result) > 0:
+                            result_item = result[0]
+                            if isinstance(result_item, dict):
+                                print(f"成功获取合约元数据")
+                                return result_item
+                            elif isinstance(result_item, str):
+                                # 尝试将字符串解析为字典
+                                try:
+                                    import json
+                                    result_dict = json.loads(result_item)
+                                    print(f"成功解析字符串元数据")
+                                    return result_dict
+                                except:
+                                    print(f"无法解析元数据字符串")
+                                    return {
+                                        'ABI': '[]',
+                                        'SourceCode': '',
+                                        'ContractName': f'Contract_{address[:8]}'
+                                    }
+                    
+                    # 检查是否是API Key错误
+                    if data.get('message') == 'NOTOK' and 'Invalid API Key' in str(data.get('result', '')):
+                        print(f"API Key验证失败，请检查环境变量是否正确设置")
+                        return {
+                            'ABI': '[]',
+                            'SourceCode': '',
+                            'ContractName': f'Contract_{address[:8]}'
+                        }
+                        
+                    print(f"API返回数据格式不正确: {data}")
+                else:
+                    print(f"API请求失败，状态码: {response.status_code}")
+                    print(f"响应内容: {response.text}")
+                
+                if attempt < max_retries - 1:
+                    print(f"将在 {retry_delay} 秒后重试...")
+                    time.sleep(retry_delay)
+                    
+            except Exception as e:
+                print(f"获取元数据时发生错误: {str(e)}")
+                if attempt < max_retries - 1:
+                    print(f"将在 {retry_delay} 秒后重试...")
+                    time.sleep(retry_delay)
+                    
+        # 所有重试都失败，返回基本元数据
+        print("所有重试都失败了，返回基本元数据")
+        return {
+            'ABI': '[]',
+            'SourceCode': '',
+            'ContractName': f'Contract_{address[:8]}'
         }
 
-        # 获取元数据
-        metadata = get_contract_metadata(address)
-        if metadata:
-            processed = process_contract_metadata(metadata)
-            contract_data.update(processed)
-            #print(contract_data)
-        else:
-            print("未验证的合约")
-
-        # 获取并处理字节码
-        bytecode = get_bytecode(address)
-        decompiled_code = None
+    def process_contract(self, address):
+        if self.current_level >= self.max_recursion_depth:
+            print(f"达到最大递归深度 {self.max_recursion_depth}，停止处理")
+            return None
+            
+        print(f"\n处理合约: {address} (层级: {self.current_level})")
+        #print(f"当前网络: {self.current_network}")
         
-        if bytecode:
-            # 需要反编译的情况：没有源码或ABI
-            if self.decompiler_enabled and (not contract_data.get('source_code') or not contract_data.get('abi')):
-                decompiled_code = decompile_bytecode(bytecode)
-                if decompiled_code:
-                    contract_data['decompiled_code'] = decompiled_code
-                    print(f"反编译代码长度: {len(decompiled_code)} 字符")
+        # 确保地址是校验和格式
+        try:
+            address_checksum = Web3.to_checksum_address(address)
+        except Exception as e:
+            print(f"转换地址为校验和格式失败: {str(e)}")
+            address_checksum = address  # 保留原始格式
+        
+        # 检查数据库中是否已存在
+        contract_info = self.get_contract_full_info(address)
+        if contract_info:
+            print("在数据库中找到合约信息")
+            if contract_info.get('decompiled_code'):
+                # 检查 decompiled_code 的类型
+                decompiled_code = contract_info['decompiled_code']
+                if isinstance(decompiled_code, str):
+                    print("使用数据库中的反编译代码 (字符串格式)")
+                else:
+                    print("使用数据库中的反编译代码 (对象格式)")
+            return contract_info
 
-            # 更新数据库
-            db = next(get_db())
-            upsert_contract(db, contract_data)
-            update_bytecode(db, address, bytecode)
-            if decompiled_code:
-                update_decompiled_code(db, address, decompiled_code)
-
-        # 递归处理逻辑合约
+        print("数据库中未找到合约信息，需要获取新数据")
+        
+        # 检测是否是代理合约
+        is_proxy, logic_address = self.detect_proxy(address_checksum)
         if is_proxy and logic_address:
-            print(f"发现代理合约，开始处理逻辑合约: {logic_address}")
-            self.process_contract(logic_address, depth+1, parent_address=address)
-
-
+            print(f"检测到代理合约，逻辑合约地址: {logic_address}")
+            # 递归处理逻辑合约
+            self.current_level += 1
+            self.process_contract(logic_address)
+            self.current_level -= 1
+        
+        # 获取合约元数据
+        try:
+            metadata = self.get_contract_metadata(address_checksum)
+            #print(f"获取到的元数据类型: {type(metadata)}")
+            if metadata:
+                print(f"元数据包含的键: {metadata.keys() if isinstance(metadata, dict) else '非字典类型'}")
+        except Exception as e:
+            print(f"处理元数据时出错: {str(e)}")
+            traceback.print_exc()
+            metadata = {
+                'ABI': '[]',
+                'SourceCode': '',
+                'ContractName': ''
+            }
+        
+        # 获取字节码
+        bytecode = self.get_bytecode(address_checksum)
+        if not bytecode:
+            print("警告：无法获取合约字节码")
+            bytecode = ''
+        
+        # 准备数据库记录
+        contract_data = {
+            'target_contract': address.lower(),
+            'abi': metadata.get('ABI', '[]'),
+            'source_code': metadata.get('SourceCode', ''),
+            'c_name': metadata.get('ContractName', ''),
+            'bytecode': bytecode,
+            'decompiled_code': '""',
+            'is_proxy': is_proxy,
+            'parent_address': logic_address if is_proxy else None,
+            'network': self.current_network,
+            'created_at': datetime.now()
+        }
+        
+        try:
+            self.update_contract_info(contract_data)
+            print("已更新数据库")
+            return contract_data
+        except Exception as e:
+            print(f"数据库更新失败: {str(e)}")
+            return None
 
     def analyze_contract(self, target_address, start_block, end_block):
-        if start_block > end_block:
-            print("Start block must be less than or equal to end block.")
-            return
+        """分析指定区块范围内的合约交互，使用trace获取完整调用链"""
+        # 验证区块范围
+        if start_block is None or end_block is None:
+            print("未指定区块范围，将使用默认范围")
+            start_block = 0
+            end_block = self.w3.eth.block_number
+        elif start_block > end_block:
+            print("起始区块大于结束区块，将交换顺序")
+            start_block, end_block = end_block, start_block
+            
+        print(f"\n分析区块范围: {start_block} - {end_block}")
+        #print(f"当前网络: {self.current_network}")
+        #print(f"使用RPC URL: {settings.NETWORKS[self.current_network]['rpc_url']}")
         
-        conn = get_db_connection()
-        cur = conn.cursor()
+        # 验证区块是否存在
+        try:
+            latest_block = self.w3.eth.block_number
+            if end_block > latest_block:
+                print(f"警告：结束区块 {end_block} 超过当前区块高度 {latest_block}，将使用当前区块高度")
+                end_block = latest_block
+        except Exception as e:
+            print(f"获取最新区块失败: {str(e)}")
+            return set()
         
-        print(f"Analyzing from block {start_block} to {end_block}")
+        # 确保目标地址是校验和格式
+        try:
+            target_address_checksum = Web3.to_checksum_address(target_address)
+        except Exception as e:
+            print(f"转换目标地址为校验和格式失败: {str(e)}")
+            target_address_checksum = target_address  # 保留原始格式
         
-        # 用于存储所有相关地址（包括caller和input_data中的地址）
+        # 用于存储所有相关地址
         related_addresses = set()
-    
+        
         count = 0
         for block_num in tqdm(range(start_block, end_block + 1)):
-            block = self.w3.eth.get_block(block_num, full_transactions=True)
-            for idx, tx in enumerate(block.transactions):
-                tx_dict = dict(tx)
-                tx_to = tx_dict.get('to', None)
+            try:
+                block = self.w3.eth.get_block(block_num, full_transactions=True)
+                
+                for tx in block.transactions:
+                    try:
+                        # 确保tx.to存在（不是合约创建交易）
+                        if tx.to is None:
+                            continue
+                        
+                        # 确保tx.to是校验和格式
+                        tx_to_checksum = Web3.to_checksum_address(tx.to) if tx.to else None
+                        tx_from_checksum = Web3.to_checksum_address(tx['from']) if tx['from'] else None
+                        
+                        # 检查交易是否与目标合约相关
+                        if tx_to_checksum and tx_to_checksum.lower() == target_address.lower():
+                            # 处理调用目标合约的交易
+                            tx_input = tx.input
+                            if isinstance(tx_input, str):
+                                # 如果是字符串，确保格式正确
+                                if tx_input.startswith('0x'):
+                                    tx_input = tx_input[2:]
+                            elif isinstance(tx_input, bytes):
+                                # 如果是字节，转换为十六进制字符串
+                                tx_input = tx_input.hex()
+                                if tx_input.startswith('0x'):
+                                    tx_input = tx_input[2:]
+                            
+                            # 获取方法名称
+                            method_name = self.get_method_name(target_address, tx_input)
+                            
+                            # 记录交互
+                            tx_data = {
+                                'target_contract': target_address.lower(),
+                                'caller_contract': tx_from_checksum.lower(),
+                                'method_name': method_name,
+                                'block_number': block_num,
+                                'tx_hash': tx.hash.hex() if isinstance(tx.hash, bytes) else tx.hash,
+                                'timestamp': datetime.fromtimestamp(block.timestamp),
+                                'input_data': tx_input,
+                                'network': self.current_network
+                            }
+                            
+                            # 保存到数据库
+                            self.save_interaction(tx_data)
+                            count += 1
+                            
+                            # 添加到相关地址集合
+                            related_addresses.add(tx_from_checksum.lower())
+                            
+                            # 从input_data中提取地址并添加到相关地址集合
+                            input_addresses = self._extract_addresses_from_input(tx_input)
+                            related_addresses.update(input_addresses)
+                            print(f"从input_data中提取了 {len(input_addresses)} 个地址")
+                            
+                            # 获取交易追踪（trace）以获取内部交易和完整调用链
+                            trace_data = self.get_transaction_trace(tx.hash)
+                            if trace_data:
+                                # 从trace中提取所有相关合约地址
+                                trace_addresses = self.extract_addresses_from_trace(trace_data)
+                                related_addresses.update(trace_addresses)
+                                
+                                # 保存trace数据到交易记录
+                                tx_data['trace_data'] = json.dumps(trace_data)
+                                self.update_interaction_trace(tx_data)
+                            
+                            # 处理交易收据中的事件日志
+                            try:
+                                receipt = self.w3.eth.get_transaction_receipt(tx.hash)
+                                if receipt and hasattr(receipt, 'logs') and receipt.logs:
+                                    # 将日志转换为可序列化格式
+                                    serialized_logs = []
+                                    for log in receipt.logs:
+                                        log_dict = {}
+                                        # 处理地址
+                                        if hasattr(log, 'address'):
+                                            log_dict['address'] = Web3.to_checksum_address(log.address).lower()
+                                            # 添加日志中的合约地址到相关地址集合
+                                            related_addresses.add(log_dict['address'].lower())
+                                        
+                                        # 处理topics
+                                        log_dict['topics'] = []
+                                        if hasattr(log, 'topics'):
+                                            for topic in log.topics:
+                                                if isinstance(topic, bytes):
+                                                    log_dict['topics'].append('0x' + topic.hex())
+                                                else:
+                                                    log_dict['topics'].append(topic)
+                                        
+                                        # 处理data
+                                        if hasattr(log, 'data'):
+                                            if isinstance(log.data, bytes):
+                                                log_dict['data'] = '0x' + log.data.hex()
+                                            else:
+                                                log_dict['data'] = log.data
+                                        
+                                        # 其他字段
+                                        if hasattr(log, 'blockNumber'):
+                                            log_dict['blockNumber'] = log.blockNumber
+                                        if hasattr(log, 'transactionHash'):
+                                            log_dict['transactionHash'] = log.transactionHash.hex() if isinstance(log.transactionHash, bytes) else log.transactionHash
+                                        
+                                        serialized_logs.append(log_dict)
+                                    
+                                    # 更新交易数据中的事件日志
+                                    tx_data['event_logs'] = json.dumps(serialized_logs)
+                                    self.update_interaction_logs(tx_data)
+                            except Exception as e:
+                                print(f"处理事件日志时出错: {str(e)}")
+                    
+                    except Exception as e:
+                        print(f"处理交易详情时出错: {str(e)}")
+                        traceback.print_exc()
+                        continue
             
-                if tx_to and tx_to.lower() == target_address.lower():
-                    input_data = tx.input.hex()
-                    method_name = self.get_method_name(target_address, tx.input)
-                    caller_address = tx['from']
-                    
-                    # 添加caller地址到相关地址集合
-                    related_addresses.add(Web3.to_checksum_address(caller_address))
-                    
-                    # 解析input_data中的地址
-                    input_addresses = self._extract_addresses_from_input(input_data)
-                    related_addresses.update(input_addresses)
-                    
-                    cur.execute("""
-                        INSERT INTO users 
-                        (target_contract, caller_contract, method_name, block_number, tx_hash, timestamp, input_data)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """, (
-                        target_address,
-                        caller_address,
-                        method_name,
-                        block_num,
-                        tx.hash.hex(),
-                        datetime.fromtimestamp(block.timestamp),
-                        input_data
-                    ))
-                    count += 1
-                    
-        conn.commit()
-        cur.close()
-        conn.close()
-        print(f"Total transactions processed: {count}")
+            except Exception as e:
+                print(f"获取区块 {block_num} 时出错: {str(e)}")
+                continue
+            
+        print(f"分析完成，共处理 {count} 笔交易")
         
         # 处理所有相关地址
         print("\n开始处理相关合约...")
         for addr in related_addresses:
-            # 检查是否是合约地址
-            code = self.w3.eth.get_code(addr)
-            if code and code.hex() != '0x':  # 如果有代码，说明是合约
-                print(f"\n处理相关合约: {addr}")
-                self.process_contract(addr)
-            else:
-                print(f"跳过普通地址: {addr}")
+            try:
+                # 确保地址是校验和格式
+                addr_checksum = Web3.to_checksum_address(addr)
+                
+                # 检查是否是合约地址
+                code = self.w3.eth.get_code(addr_checksum)
+                if code and code.hex() != '0x':  # 如果有代码，说明是合约
+                    print(f"\n处理相关合约: {addr_checksum}")
+                    self.process_contract(addr_checksum)
+                else:
+                    print(f"跳过普通地址: {addr_checksum}")
+            except Exception as e:
+                print(f"处理地址 {addr} 时出错: {str(e)}")
+                traceback.print_exc()
         
-        return related_addresses  # 返回相关地址集合供后续分析使用
+        return related_addresses
+
+    def get_transaction_trace(self, tx_hash):
+        """获取交易的完整调用追踪"""
+        try:
+            # 将tx_hash转换为十六进制字符串格式
+            if isinstance(tx_hash, bytes):
+                tx_hash = '0x' + tx_hash.hex()
+            elif isinstance(tx_hash, str) and not tx_hash.startswith('0x'):
+                tx_hash = '0x' + tx_hash
+            
+            # 使用RPC调用获取交易追踪
+            trace_params = {
+                "method": "debug_traceTransaction",
+                "params": [tx_hash, {"tracer": "callTracer"}],
+                "jsonrpc": "2.0",
+                "id": 1
+            }
+            
+            # 获取当前网络的RPC URL
+            rpc_url = settings.NETWORKS[self.current_network]['rpc_url']
+            
+            # 发送RPC请求
+            response = requests.post(rpc_url, json=trace_params)
+            if response.status_code == 200:
+                result = response.json()
+                if 'result' in result:
+                    return result['result']
+                else:
+                    print(f"获取交易追踪失败: {result.get('error', '未知错误')}")
+            else:
+                print(f"RPC请求失败，状态码: {response.status_code}")
+            
+        except Exception as e:
+            print(f"获取交易追踪时出错: {str(e)}")
+            traceback.print_exc()
+        
+        return None
+
+    def extract_addresses_from_trace(self, trace_data):
+        """从交易追踪数据中提取所有相关合约地址"""
+        addresses = set()
+        
+        def process_call(call_data):
+            # 添加当前调用的to地址
+            if 'to' in call_data and call_data['to']:
+                try:
+                    # 确保地址格式正确
+                    addr = call_data['to']
+                    if Web3.is_address(addr):
+                        addresses.add(Web3.to_checksum_address(addr).lower())
+                except Exception as e:
+                    print(f"处理trace地址时出错: {str(e)}")
+            
+            # 添加当前调用的from地址
+            if 'from' in call_data and call_data['from']:
+                try:
+                    addr = call_data['from']
+                    if Web3.is_address(addr):
+                        addresses.add(Web3.to_checksum_address(addr).lower())
+                except Exception as e:
+                    print(f"处理trace地址时出错: {str(e)}")
+            
+            # 递归处理子调用
+            if 'calls' in call_data and isinstance(call_data['calls'], list):
+                for subcall in call_data['calls']:
+                    process_call(subcall)
+        
+        # 开始处理根调用
+        if trace_data:
+            process_call(trace_data)
+        
+        return addresses
+
+    def update_interaction_trace(self, tx_data):
+        """更新交互数据的trace信息"""
+        try:
+            # 查找现有记录
+            interaction = self.db.query(UserInteraction).filter(
+                UserInteraction.tx_hash == tx_data['tx_hash']
+            ).first()
+            
+            if interaction:
+                # 更新trace数据
+                interaction.trace_data = tx_data.get('trace_data')
+                self.db.commit()
+                return True
+            return False
+        except Exception as e:
+            self.db.rollback()
+            print(f"更新trace数据时出错: {str(e)}")
+            return False
 
     def _extract_addresses_from_input(self, input_data):
         """从input_data中提取以太坊地址"""
         addresses = set()
         
+        # 确保input_data是字符串格式
+        if isinstance(input_data, bytes):
+            input_data = input_data.hex()
+        
         # 移除0x前缀
         if input_data.startswith('0x'):
             input_data = input_data[2:]
-            
-        # 方法ID在前4个字节
+        
+        # 方法ID在前4个字节（8个字符）
         method_id = input_data[:8]
         data = input_data[8:]
         
         # 每32字节（64个字符）为一个参数
         for i in range(0, len(data), 64):
-            param = data[i:i+64]
-            # 检查是否可能是地址（通过检查前24个字节是否为0）
-            if param.startswith('000000000000000000000000'):
-                potential_address = '0x' + param[-40:]
-                if Web3.is_address(potential_address):
-                    addresses.add(Web3.to_checksum_address(potential_address))
-                    
+            if i + 64 <= len(data):
+                param = data[i:i+64]
+                # 检查是否可能是地址（通过检查前24个字节是否为0）
+                if param.startswith('000000000000000000000000'):
+                    potential_address = '0x' + param[-40:]
+                    if Web3.is_address(potential_address):
+                        try:
+                            # 转换为校验和格式
+                            checksum_address = Web3.to_checksum_address(potential_address)
+                            addresses.add(checksum_address.lower())
+                            print(f"从input_data中提取到地址: {checksum_address}")
+                        except Exception as e:
+                            print(f"转换地址格式时出错: {str(e)}")
+        
         return addresses
 
-    def execute_full_analysis(self, address: str, start: int, end: int, analysis_type: str = "transaction_analysis", user_input: str = ""):
+    def execute_full_analysis(self, address: str, start: int, end: int, analysis_type: str = "transaction_analysis", user_input: str = "", network: str = "ethereum"):
         """全流程入口（集成原有逻辑）"""
-        # 初始化处理管道
-        pipeline = ContractPipeline()
+        # 强制使用以太坊网络，忽略传入的network参数
+        self.current_network = "ethereum"
+        #print(f"\n=== 网络配置 ===")
+        #print(f"当前网络: ethereum")
+        #print(f"RPC URL: {settings.NETWORKS['ethereum']['rpc_url']}")
+        
+        # 验证网络连接
+        try:
+            current_block = self.w3.eth.block_number
+            print(f"当前区块高度: {current_block}")
+        except Exception as e:
+            error_msg = f"网络连接失败: {str(e)}"
+            print(error_msg)
+            return error_msg
+        
+        # 初始化处理管道（传递当前实例）
+        pipeline = ContractPipeline(self)
         
         # 步骤1：处理目标合约及元数据
         print("\n=== 步骤1：处理目标合约 ===")
-        pipeline.process_with_metadata(address)
+        try:
+            contract_info = pipeline.process_with_metadata(address)
+            if not contract_info:
+                print("警告：无法获取合约信息，但将继续分析")
+        except Exception as e:
+            print(f"处理合约时出错: {str(e)}")
+            traceback.print_exc()
+            print("将继续分析交易历史...")
         
         # 步骤2：执行区块分析和相关合约处理
         related_addresses = set()
-        if analysis_type == "transaction_analysis" and end > start:
+        if analysis_type in ["transaction_analysis", "security_analysis"]:
             print("\n=== 步骤2：分析交易历史 ===")
-            related_addresses = self.analyze_contract(address, start, end)
+            print(f"分析区块范围: {start} - {end}")
+            try:
+                related_addresses = self.analyze_contract(address, start, end)
+            except Exception as e:
+                error_msg = f"交易分析失败: {str(e)}"
+                print(error_msg)
+                return error_msg
         
         # 步骤3：触发深度分析
         print("\n=== 步骤3：生成深度分析 ===")
@@ -398,34 +821,84 @@ class ContractAnalyzer:
             "start_block": start,
             "end_block": end,
             "analysis_type": analysis_type,
-            "related_addresses": list(related_addresses),  # 传入相关地址列表
-            "user_input": user_input  # 传入原始用户输入
+            "related_addresses": list(related_addresses),
+            "user_input": user_input,
+            "network": "ethereum"  # 固定为以太坊网络
         })
-        
-        # 检查是否获得了有意义的深度分析
-        if "在指定区块范围内未发现任何交互" in analysis_result or len(analysis_result) < 200:
-            print("\n=== 未获得足够的深度分析信息，生成直接回答 ===")
-            from analyze_user_behavior import request_ds
-            
-            direct_answer_prompt = f"""
-            作为区块链安全分析专家，请直接回答用户的问题。
-            
-            我们已经分析了合约 {address}，但未能获取足够的交互数据或相关信息进行深度分析。
-            请基于合约地址和用户问题提供一般性的专业回答。
-            
-            用户问题：{user_input}
-            目标合约：{address}
-            
-            请提供专业、准确的回答，包括可能的安全建议或分析方向。
-            """
-            
-            return request_ds(direct_answer_prompt, "")
         
         return analysis_result
 
+    def get_contract_full_info(self, address):
+        """获取合约完整信息"""
+        return db_get_contract_full_info(self.db, address.lower())
+        
+    def get_bytecode(self, address):
+        """获取合约字节码"""
+        try:
+            bytecode = self.w3.eth.get_code(Web3.to_checksum_address(address))
+            return bytecode.hex()
+        except Exception as e:
+            print(f"获取字节码失败: {str(e)}")
+            return ""
+            
+    def update_contract_info(self, contract_data):
+        """更新合约信息到数据库"""
+        try:
+            upsert_contract(self.db, contract_data)
+        except Exception as e:
+            print(f"更新合约信息失败: {str(e)}")
+
+    def save_interaction(self, tx_data):
+        """保存交互数据到数据库"""
+        try:
+            # 检查是否已存在相同的交易哈希
+            existing = self.db.query(UserInteraction).filter(
+                UserInteraction.tx_hash == tx_data['tx_hash']
+            ).first()
+            
+            if not existing:
+                # 创建新记录
+                interaction = UserInteraction(
+                    target_contract=tx_data['target_contract'],
+                    caller_contract=tx_data['caller_contract'],
+                    method_name=tx_data['method_name'],
+                    block_number=tx_data['block_number'],
+                    tx_hash=tx_data['tx_hash'],
+                    timestamp=tx_data['timestamp'],
+                    input_data=tx_data.get('input_data', ''),
+                    network=tx_data.get('network', 'ethereum')
+                )
+                self.db.add(interaction)
+                self.db.commit()
+                return True
+            return False
+        except Exception as e:
+            self.db.rollback()
+            print(f"保存交互数据时出错: {str(e)}")
+            return False
+
+    def update_interaction_logs(self, tx_data):
+        """更新交互数据的事件日志"""
+        try:
+            # 查找现有记录
+            interaction = self.db.query(UserInteraction).filter(
+                UserInteraction.tx_hash == tx_data['tx_hash']
+            ).first()
+            
+            if interaction:
+                # 更新事件日志
+                interaction.event_logs = tx_data.get('event_logs')
+                self.db.commit()
+                return True
+            return False
+        except Exception as e:
+            self.db.rollback()
+            print(f"更新事件日志时出错: {str(e)}")
+            return False
+
 
 if __name__ == "__main__":
-    user_input = input("请输入分析请求（例如：分析最近一周UNI代币的安全事件）：")
+    user_input = input("请输入分析请求（例如：分析最近一周UNI代币的安全事件 或 分析地址0x123...在区块15000000至15001000的交易）：")
     
     # 第一步：LLM解析+RAG检索
     processor = LLMQueryProcessor()
@@ -450,13 +923,22 @@ if __name__ == "__main__":
         print(answer)
         exit()
     
+    # 强制设置为以太坊网络
+    rag_data['network'] = "ethereum"
+    
     # 打印分析信息（方便调试）
     print(f"\n=== 分析参数 ===")
     print(f"目标代币/合约: {llm_params.get('token_identifier', 'Unknown')}")
     print(f"时间范围: {llm_params.get('time_range_hint', '1天')}")
     print(f"分析重点: {', '.join(llm_params.get('analysis_focus', ['资金流向']))}")
     print(f"分析类型: {llm_params.get('analysis_type', 'transaction_analysis')}")
-    print(f"区块范围: {rag_data['start_block']} - {rag_data['end_block']}")
+    print(f"网络: ethereum")  # 固定显示以太坊网络
+    
+    # 显示区块范围来源
+    if llm_params.get('user_specified_blocks', False):
+        print(f"区块范围(用户指定): {rag_data['start_block']} - {rag_data['end_block']}")
+    else:
+        print(f"区块范围(系统推断): {rag_data['start_block']} - {rag_data['end_block']}")
     
     # 第二步：主分析流程
     analyzer = ContractAnalyzer()
@@ -464,8 +946,9 @@ if __name__ == "__main__":
         rag_data['address'],
         rag_data['start_block'],
         rag_data['end_block'],
-        llm_params.get('analysis_type', 'transaction_analysis'),  # 传入分析类型
-        user_input  # 传入原始用户输入，用于生成直接回答
+        llm_params.get('analysis_type', 'transaction_analysis'),
+        user_input,
+        "ethereum"  # 强制使用以太坊网络
     )
     
     # 第三步：输出结果

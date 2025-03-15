@@ -43,11 +43,15 @@ def process_contract_metadata(metadata):
             sources = json.loads(source_code[1:-1])
             processed['source_code'] = "\n\n".join(
                 f"// File: {name}\n{content.get('content', '')}" 
-                for name, content in sources.items()
+                for name, content in sources.items() if isinstance(content, dict)  # 确保content是字典
             )
         except json.JSONDecodeError:
-            processed['source_code'] = source_code
+            print(f"源代码解析失败，返回原始内容: {source_code}")
+            processed['source_code'] = source_code  # 返回原始内容
     else:
-        processed['source_code'] = source_code
+        if isinstance(source_code, str) and source_code:
+            processed['source_code'] = source_code  # 直接赋值
+        else:
+            print("未找到有效的源代码")
     
     return processed
