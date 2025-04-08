@@ -1,4 +1,4 @@
-from typing import Tuple, Dict, List
+from typing import Tuple, Dict, List, Optional
 from src.first_LLM.rag_handler import RAG_INSTANCE 
 import re
 from openai import OpenAI
@@ -51,6 +51,10 @@ Return the result strictly in the following JSON format, without any additional 
         time_range_hint = None
         network = "ethereum"  # Fixed to Ethereum network
         
+        # Check if it's an Ethereum address format
+        address_pattern = re.compile(r'0x[a-fA-F0-9]{40}')
+        address_match = address_pattern.search(user_input)
+        
         # Check if block range is specified
         block_pattern = re.compile(
             r'block\s*'          # "block" prefix
@@ -72,15 +76,15 @@ Return the result strictly in the following JSON format, without any additional 
         )
         time_match = time_pattern.search(user_input)
         
-        # First process block range
+        # 修改时间范围处理逻辑
         if block_match:
+            # 用户指定了具体的区块范围
             start_block = int(block_match.group(1))
             end_block = int(block_match.group(2))
             time_range_hint = f"Block range: {start_block} - {end_block}"
             print(f"Detected user-specified block range: {start_block} - {end_block}")
-        # Then process time range
         elif time_match:
-            # Parse time unit and amount
+            # 用户指定了时间范围（如"last hour"）
             amount_text = time_match.group(1)
             amount = 1
             if amount_text and amount_text.strip():
@@ -89,10 +93,9 @@ Return the result strictly in the following JSON format, without any additional 
                 except ValueError:
                     amount = 1
                     
-            unit = time_match.group(2)  # Get the time unit
+            unit = time_match.group(2)
             time_range_hint = f"Last {amount} {unit}{'s' if amount > 1 else ''}"
             
-            # Calculate blocks based on time unit
             blocks_per_unit = {
                 'hour': 300,    
                 'minute': 5,      
@@ -105,12 +108,43 @@ Return the result strictly in the following JSON format, without any additional 
             start_block = max(0, current_block - blocks_to_subtract)
             end_block = current_block
             print(f"Based on time range '{amount} {unit}{'s' if amount > 1 else ''}', calculated block range: {start_block} - {end_block}")
-        # Finally set default values
         else:
-            start_block = current_block - 300  # Default to last hour
+            # 用户没有指定时间范围，查询所有历史
+            print("No time range specified, will analyze all historical transactions")
             end_block = current_block
-            time_range_hint = "Last 1 hour (default)"
-            print("No time range specified, using default: Last 1 hour")
+            
+            # 先获取地址，以确定是否需要查询全部历史
+            if address_match:
+                addresses = [address_match.group()]
+            else:
+                try:
+                    if "event" in user_input.lower() or "attack" in user_input.lower() or "hack" in user_input.lower():
+                        addresses = self._safe_extract_address_from_search(user_input, "event")
+                    else:
+                        addresses = self._safe_extract_address_from_search(user_input, "any")
+                except Exception as e:
+                    print(f"Error during address search: {str(e)}")
+                    addresses = []
+            
+            if addresses:
+                try:
+                    # 获取合约创建区块
+                    address = Web3.to_checksum_address(addresses[0])
+                    # 使用二分查找找到合约创建区块
+                    start_block = self._find_contract_creation_block(address)
+                    if start_block is None:
+                        print("Could not determine contract creation block, using block 1")
+                        start_block = 1
+                    time_range_hint = f"All history (from block {start_block} to {end_block})"
+                except Exception as e:
+                    print(f"Error finding contract creation block: {str(e)}")
+                    start_block = 1
+                    time_range_hint = "All history"
+            else:
+                # 如果没有找到地址，使用较大的默认范围
+                start_block = max(0, current_block - 100000)  # 约2周的区块
+                time_range_hint = "Recent history (last 100000 blocks)"
+                print("No valid address found, using recent history")
         
         # Check if it's an Ethereum address format
         address_pattern = re.compile(r'0x[a-fA-F0-9]{40}')
@@ -133,40 +167,30 @@ Return the result strictly in the following JSON format, without any additional 
         
         # Modify search logic
         if address_match:
-            address = address_match.group()
+            addresses = [address_match.group()]
         else:
             # Try to get address from LLM result
-            address = llm_result.get('token_identifier')
-            if not address or not re.match(r'0x[a-fA-F0-9]{40}', address):
-                try:
-                    # 1. First try to search in the event database
-                    if "event" in user_input.lower() or "attack" in user_input.lower():
-                        print("Searching in event database...")
-                        try:
-                            # Use "event" type for event searches
-                            address = self._safe_extract_address_from_search(user_input, "event")
-                            if address:
-                                print(f"Found address in event database: {address}")
-                        except Exception as e:
-                            print(f"Error during event search: {str(e)}")
-                    
-                    # 2. If event search fails, try token/pool search with more flexible type matching
-                    if not address or not Web3.is_address(address):
-                        search_token = token_identifier or llm_result.get('token_identifier', '')
-                        if search_token:
-                            # Look for tokens, pools or any other type - using "any" instead of "token"
-                            print(f"Searching for {search_token}...")
-                            try:
-                                # Use "any" to accept all types (token, pool, etc.)
-                                address = self._safe_extract_address_from_search(search_token, "any")
-                                if address:
-                                    print(f"Found address: {address}")
-                            except Exception as e:
-                                print(f"Error during search: {str(e)}")
+            addresses = []
+            try:
+                # 1. First try to search in the event database
+                if "event" in user_input.lower() or "attack" in user_input.lower() or "hack" in user_input.lower():
+                    print("Searching for security events...")
+                    try:
+                        addresses = self._safe_extract_address_from_search(user_input, "event")
+                    except Exception as e:
+                        print(f"Error during event search: {str(e)}")
                 
-                except Exception as e:
-                    print(f"Error during search process: {str(e)}")
-                    address = None
+                # 2. If event search fails, try general search
+                if not addresses:
+                    print(f"Performing general search...")
+                    try:
+                        addresses = self._safe_extract_address_from_search(user_input, "any")
+                    except Exception as e:
+                        print(f"Error during search: {str(e)}")
+            
+            except Exception as e:
+                print(f"Error during search process: {str(e)}")
+                addresses = []
         
         # Determine analysis type and focus
         analysis_type = "security_analysis" if is_security_analysis else (
@@ -183,22 +207,23 @@ Return the result strictly in the following JSON format, without any additional 
         
         # Build final result
         final_llm_result = {
-            "token_identifier": address,
+            "token_identifier": addresses[0] if addresses else "",  # 保持向后兼容，使用第一个地址
             "time_range_hint": time_range_hint,
-            "analysis_focus": list(set(analysis_focus)),  # Remove duplicates
+            "analysis_focus": list(set(analysis_focus)),
             "analysis_type": analysis_type,
             "user_input": user_input,
             "user_specified_blocks": block_match is not None or time_match is not None,
-            "network": "ethereum"  # Fixed to Ethereum network
+            "network": "ethereum"
         }
         
         final_rag_data = {
-            'address': address,
+            'address': addresses[0] if addresses else "",  # 保持向后兼容，使用第一个地址
+            'addresses': addresses,  # 保留完整的地址列表
             'start_block': start_block,
             'end_block': end_block,
-            'raw_data': {'id': address} if address else None,
+            'raw_data': {'addresses': addresses} if addresses else None,
             'user_input': user_input,
-            'network': "ethereum"  # Fixed to Ethereum network
+            'network': "ethereum"
         }
         
         return final_llm_result, final_rag_data
@@ -260,7 +285,7 @@ Return the result strictly in the following JSON format, without any additional 
     def _rule_based_parse(self, text: str) -> Dict:
         """基于正则的快速解析"""
         patterns = {
-            'token': r'\b([A-Z]{3,5})\b|(\bERC-20\s+代币\s+[\w\s]+)',
+            'token': r'\b([A-Z]{3,5})\b|(\bERC-20\s+token\s+[\w\s]+)',
             'time_range': r'in (\d+) days|past (\d+) months',
             'focus': r'security event|漏洞|fund flow'
         }
@@ -280,154 +305,186 @@ Return the result strictly in the following JSON format, without any additional 
         
         return result
 
-    def _safe_extract_address_from_search(self, query, search_type="any"):
+    def _get_entities_from_llm(self, query: str) -> Dict[str, List[str]]:
         """
-        Safely extract address from search results, avoiding unpacking errors
-        search_type: "token", "event", "any"
-        """
-        try:
-            # Preprocess query to extract the most relevant parts
-            processed_query = query
-            
-            # For event searches, use more advanced processing
-            if search_type == "event":
-                # First remove common action words that aren't part of the entity name
-                processed_query = re.sub(r'(?i)analysis|analyze|query|understand|describe', '', query)
-                
-                # Try to extract the entity name after prepositions
-                entity_match = re.search(r'(?i)(?:of|about|for|regarding|on)\s+([a-zA-Z0-9\s]+?)(?:\s+in\s+|\s+block|\s+during|\s*$)', processed_query)
-                if entity_match:
-                    extracted_entity = entity_match.group(1).strip()
-                    if len(extracted_entity) > 3:  # Avoid very short extractions
-                        processed_query = extracted_entity
-                        print(f"Extracted entity from query: '{extracted_entity}'")
-            
-            # Log detailed search information
-            print(f"Executing {search_type} type search, original query: '{query}'")
-            print(f"Processed query: '{processed_query}'")
-            
-            # Direct call to search method
-            results = RAG_INSTANCE.search(processed_query)
-            
-            # Log detailed search results
-            print(f"Search results count: {len(results) if results else 0}")
-            if results and len(results) > 0:
-                for i, result in enumerate(results):
-                    if isinstance(result, dict):
-                        result_type = result.get('type', 'unknown')
-                        result_addr = result.get('address', 'no_address')
-                        print(f"Result #{i+1}: type={result_type}, address={result_addr}")
-                    else:
-                        print(f"Result #{i+1}: non-dictionary type ({type(result)})")
-            
-            # Process each result
-            for item in (results or []):
-                # Ensure result is dictionary type
-                if not isinstance(item, dict):
-                    print(f"Skipping non-dictionary result: {type(item)}")
-                    continue
-                    
-                # Validate type match
-                item_type = item.get('type', 'unknown')
-                if search_type != "any" and item_type != search_type:
-                    print(f"Skipping result with non-matching type: expected={search_type}, actual={item_type}")
-                    continue
-                
-                # Extract and validate address
-                addr = item.get('address')
-                if not addr:
-                    print(f"Result missing address field")
-                    continue
-                    
-                # Validate address format
-                try:
-                    if Web3.is_address(addr):
-                        valid_address = Web3.to_checksum_address(addr)
-                        print(f"Found valid address: {valid_address}")
-                        return valid_address
-                    else:
-                        print(f"Invalid Ethereum address: {addr}")
-                except Exception as e:
-                    print(f"Address validation failed: {str(e)}")
-            
-            # No matching valid address found
-            print(f"No valid address found")
-            return None
-            
-        except Exception as e:
-            print(f"Error during address extraction: {str(e)}")
-            print(f"Error details: {traceback.format_exc()}")
-            return None
-
-    def _get_entities_from_llm(self, query: str) -> List[str]:
-        """
-        使用LLM从查询中提取相关实体（代币名称、池子名称、安全事件等）
+        使用LLM从查询中提取相关实体，并按类型分类
+        返回格式：{
+            'tokens': ['WETH', 'USDC'],  # 代币对
+            'pools': ['Uniswap V3: WETH/USDC'],  # 明确指定的池子
+            'events': ['hack event name']  # 安全事件
+        }
         """
         try:
-            # 准备提示词，专门用于实体提取
-            prompt = """Please analyze the following query and extract any blockchain-related entities such as:
-1. Token names (e.g., USDT, BAL, ETH)
-2. Pool names (e.g., "Balancer: B-stETH-STABLE pool", "Uniswap V3: USDC/ETH")
-3. Security event names (e.g., "Bybit hack", "neobank Infini attack")
-4. Protocol names (e.g., Aave, Compound, Uniswap)
+            prompt = """Please analyze the following query and categorize blockchain-related entities into these types:
+1. Trading pairs or individual tokens (e.g., "WETH-USDC", "WETH and USDC", "USDT")
+2. Specific pool names if mentioned (e.g., "Balancer: B-stETH-STABLE pool")
+3. Security events if mentioned (e.g., "Bybit hack")
 
 Query: {query}
 
-Return only the extracted entities as a JSON list, with no additional text:
-["entity1", "entity2", ...]
-
-If no relevant entities are found, return an empty list: []
+Return the result in the following JSON format, with no additional text:
+{{
+    "tokens": ["token1", "token2"],  // For trading pairs, include both tokens. For single token queries, include just one
+    "pools": ["pool_name"],  // Specific pool names if mentioned
+    "events": ["event_name"]  // Security event names if mentioned
+}}
 """
             
-            # 调用LLM
             response = self.client.chat.completions.create(
                 model=self.MODELNAME,
                 messages=[{
                     "role": "system",
                     "content": prompt.format(query=query)
                 }],
-                temperature=0.2,  # 较低的温度，以获得更确定性的结果
+                temperature=0.1
             )
             
             content = response.choices[0].message.content.strip()
             
-            # 处理可能包含的markdown代码块
+            # 处理JSON响应
             if content.startswith('```json'):
                 content = content.replace('```json\n', '').replace('\n```', '')
             elif content.startswith('```'):
                 content = content.replace('```\n', '').replace('\n```', '')
             
-            # 解析JSON结果
-            try:
-                entities = json.loads(content)
-                if isinstance(entities, list):
-                    # 过滤掉过短的实体
-                    filtered_entities = [e for e in entities if len(e) > 2]
-                    print(f"LLM identified entities: {filtered_entities}")
-                    return filtered_entities
-                else:
-                    print(f"LLM returned non-list result: {content}")
-                    return []
-            except json.JSONDecodeError as e:
-                print(f"Failed to parse LLM response as JSON: {e}")
-                print(f"Raw content: {content}")
-                # 尝试从文本中提取可能的实体
-                if "[" in content and "]" in content:
-                    try:
-                        # 尝试提取JSON数组部分
-                        json_part = content[content.find("["):content.rfind("]")+1]
-                        entities = json.loads(json_part)
-                        if isinstance(entities, list):
-                            return [e for e in entities if len(e) > 2]
-                    except:
-                        pass
+            result = json.loads(content)
+            print(f"LLM entity extraction result: {result}")
+            return result
             
-            # 仍然失败，尝试正则表达式提取引号中的内容
-            import re
-            quoted_entities = re.findall(r'"([^"]+)"', content)
-            if quoted_entities:
-                return [e for e in quoted_entities if len(e) > 2]
-            return []
         except Exception as e:
-            print(f"Error using LLM for entity extraction: {str(e)}")
+            print(f"Error in entity extraction: {str(e)}")
+            return {"tokens": [], "pools": [], "events": []}
+
+    def _safe_extract_address_from_search(self, query, search_type="any"):
+        """
+        针对代币对查询优化的地址搜索
+        返回格式：List[str] - 地址列表
+        """
+        try:
+            # 提取实体
+            entities = self._get_entities_from_llm(query)
+            
+            # 1. 如果是安全事件查询
+            if search_type == "event" or entities['events']:
+                print("Searching for security event...")
+                event_name = entities['events'][0] if entities['events'] else query
+                event_results = RAG_INSTANCE.search(event_name)
+                event_addresses = []
+                
+                for result in event_results:
+                    if (isinstance(result, dict) and 
+                        result.get('type') == 'event' and 
+                        result.get('score', 0) >= 80):
+                        address = result['address']
+                        if Web3.is_address(address):
+                            event_addresses.append(Web3.to_checksum_address(address))
+                
+                if event_addresses:
+                    print(f"Found event addresses: {event_addresses}")
+                    return event_addresses
+            
+            # 2. 如果有代币对，搜索交易池
+            if len(entities['tokens']) == 2:
+                token0, token1 = entities['tokens']
+                pool_addresses = []
+                
+                # 构建常见DEX的池子名称模式
+                pool_patterns = [
+                    f"Uniswap V2: {token0}-{token1}",
+                    f"Uniswap V3: {token0}/{token1}",
+                    f"Balancer: {token0}-{token1}",
+                    f"SushiSwap: {token0}-{token1}",
+                    f"Curve: {token0}-{token1}"
+                ]
+                
+                # 搜索所有可能的池子
+                for pattern in pool_patterns:
+                    pool_results = RAG_INSTANCE.search(pattern)
+                    for result in pool_results:
+                        if (isinstance(result, dict) and 
+                            result.get('type') == 'pool' and 
+                            result.get('score', 0) >= 80):
+                            pool_address = result['address']
+                            if Web3.is_address(pool_address):
+                                pool_addresses.append(Web3.to_checksum_address(pool_address))
+                
+                # 去重
+                pool_addresses = list(set(pool_addresses))
+                if pool_addresses:
+                    print(f"Found pool addresses: {pool_addresses}")
+                    return pool_addresses
+            
+            # 3. 如果是单个代币
+            elif len(entities['tokens']) == 1:
+                token_results = RAG_INSTANCE.search(entities['tokens'][0])
+                for result in token_results:
+                    if isinstance(result, dict) and result.get('type') == 'token':
+                        address = result['address']
+                        if Web3.is_address(address):
+                            return [Web3.to_checksum_address(address)]
+            
+            # 4. 如果以上都没有找到，尝试直接搜索
+            print(f"Trying direct search with query: {query}")
+            direct_results = RAG_INSTANCE.search(query)
+            for result in direct_results:
+                if isinstance(result, dict) and result.get('score', 0) >= 80:
+                    address = result.get('address')
+                    if address and Web3.is_address(address):
+                        return [Web3.to_checksum_address(address)]
+            
+            print("No valid addresses found")
             return []
+            
+        except Exception as e:
+            print(f"Error during address extraction: {str(e)}")
+            traceback.print_exc()  # 添加这行来打印详细错误信息
+            return []
+
+    def _find_contract_creation_block(self, address: str, batch_size: int = 100000) -> Optional[int]:
+        """
+        使用二分查找找到合约创建区块
+        """
+        try:
+            w3 = Web3(Web3.HTTPProvider(os.getenv("ALCHEMY_URL")))
+            current_block = w3.eth.block_number
+            
+            print(f"Searching for contract creation block for {address}")
+            
+            # 检查当前区块是否存在合约代码
+            code = w3.eth.get_code(address)
+            if code == b'':
+                print("No contract code found at this address")
+                return None
+            
+            left = 1
+            right = current_block
+            creation_block = None
+            
+            while left <= right:
+                mid = (left + right) // 2
+                
+                try:
+                    # 检查中间区块的代码
+                    code = w3.eth.get_code(address, block_identifier=mid)
+                    if code == b'':
+                        # 合约在这个区块还不存在
+                        left = mid + 1
+                    else:
+                        # 合约在这个区块存在，记录并继续向前搜索
+                        creation_block = mid
+                        right = mid - 1
+                except Exception as e:
+                    print(f"Error checking block {mid}: {str(e)}")
+                    # 如果出错，缩小搜索范围
+                    right = mid - 1
+            
+            if creation_block is not None:
+                print(f"Found contract creation around block {creation_block}")
+                return creation_block
+            
+            print("Could not determine exact creation block")
+            return None
+            
+        except Exception as e:
+            print(f"Error in contract creation block search: {str(e)}")
+            return None
