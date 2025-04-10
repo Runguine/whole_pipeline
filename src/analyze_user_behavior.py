@@ -9,6 +9,9 @@ import time
 from datetime import datetime
 import traceback
 import requests
+from sqlalchemy.pool import QueuePool
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 # 新增在analyze_user_behavior.py顶部
 USER_QUERY_PROMPT = """
@@ -394,17 +397,16 @@ def generate_code_context(contracts_chain):
                     source_code_str = json.dumps(source_code, indent=2)
                 else:
                     source_code_str = str(source_code)
-                    
-                code_sections.append(
-                    f"// 验证源码（{contract['type']}合约 {contract['address']}）\n"
-                    f"{source_code_str}"
-                )
+                    code_sections.append(
+                        f"// 验证源码（{contract['type']}合约 {contract['address']}）\n"
+                                    f"{source_code_str}"
+                    )
             except Exception as e:
                 print(f"处理源码时出错: {str(e)}")
                 code_sections.append(
                     f"// 验证源码（{contract['type']}合约 {contract['address']}）\n"
                     f"// 处理源码时出错: {str(e)}"
-            )
+                )
         
         # 反编译代码
         decompiled_code = contract.get("decompiled_code", "")
@@ -422,10 +424,10 @@ def generate_code_context(contracts_chain):
                 else:
                     decompiled_code_str = str(decompiled_code)
                     
-                code_sections.append(
-                f"// 反编译代码（{contract['type']}合约 {contract['address']}）\n"
-                    f"{decompiled_code_str}"
-                )
+                    code_sections.append(
+                        f"// 反编译代码（{contract['type']}合约 {contract['address']}）\n"
+                                    f"{decompiled_code_str}"
+                        )
             except Exception as e:
                 print(f"处理反编译代码时出错: {str(e)}")
                 code_sections.append(
@@ -439,7 +441,7 @@ def generate_code_context(contracts_chain):
             try:
                 code_sections.append(
                 f"// ABI定义（{contract['type']}合约 {contract['address']}）\n"
-                    f"{json.dumps(abi, indent=2)}"
+                        f"{json.dumps(abi, indent=2)}"
                 )
             except Exception as e:
                 print(f"处理ABI时出错: {str(e)}")
@@ -496,11 +498,11 @@ def analyze_input_data(input_data, abi):
                         if isinstance(param_value, str) and Web3.is_address(param_value):
                             extracted_addresses.append(param_value)
                     
-                    return {
-                        'method': decoded[0].fn_name,
-                        'params': dict(decoded[1]),
-                        'extracted_addresses': extracted_addresses
-                    }
+                            return {
+                                'method': decoded[0].fn_name,
+                                                        'params': dict(decoded[1]),
+                                                        'extracted_addresses': extracted_addresses
+                            }
                 except ValueError as e:
                     if "Could not find any function with matching selector" in str(e):
                         # 这是正常的，意味着ABI中没有匹配的函数
@@ -519,13 +521,13 @@ def analyze_input_data(input_data, abi):
         params = []
         data = input_data[8:]
     
-    # 每32字节（64个字符）为一个参数
+        # 每32字节（64个字符）为一个参数
         for i in range(0, len(data), 64):
-            if i + 64 > len(data):
-                # 处理不完整的参数
-                param = data[i:]
-                params.append(f"Incomplete: {param}")
-                continue
+                if i + 64 > len(data):
+                    # 处理不完整的参数
+                    param = data[i:]
+                    params.append(f"Incomplete: {param}")
+                    continue
                 
         param = data[i:i+64]
         # 检查是否是地址
@@ -544,11 +546,11 @@ def analyze_input_data(input_data, abi):
             except:
                 params.append(f"Raw: {param}")
     
-        return {
-            'method_id': f"0x{method_id}",
-            'params': params,
-            'extracted_addresses': extracted_addresses
-        }
+                return {
+                        'method_id': f"0x{method_id}",
+                        'params': params,
+                        'extracted_addresses': extracted_addresses
+                }
     except Exception as e:
         print(f"分析input_data时出错: {str(e)}")
         traceback.print_exc()
@@ -573,6 +575,15 @@ def process_user_query(params):
         print(f"合约地址: {params['contract_address']}")
         print(f"区块范围: {params['start_block']} - {params['end_block']}")
         
+        # 添加调用链分析
+        call_graph = build_transaction_call_graph(
+            params['target_contract'],
+            params['start_block'],
+            params['end_block'],
+            max_depth=3,
+            pruning_enabled=True  # 启用剪枝
+        )
+        
         # 生成初步分析
         print("\n=== 生成初步分析 ===")
         preliminary_analysis = generate_preliminary_analysis(params)
@@ -583,7 +594,8 @@ def process_user_query(params):
             target_contract=params['contract_address'],
             start_block=params['start_block'],
             end_block=params['end_block'],
-            related_addresses=params.get('related_addresses', [])
+            related_addresses=params.get('related_addresses', []),
+            call_graph=call_graph  # 传递调用图给行为分析
         )
         
         # 检查行为分析结果
@@ -648,7 +660,7 @@ def save_report(report_content, params):
     except Exception as e:
         print(f"\n保存报告时出错: {str(e)}")
 
-def analyze_behavior_new(target_contract=None, start_block=None, end_block=None, related_addresses=None):
+def analyze_behavior_new(target_contract=None, start_block=None, end_block=None, related_addresses=None, call_graph=None):
     # 输出调试信息
     print(f"开始分析行为，参数：target={target_contract}, start={start_block}, end={end_block}")
     print(f"相关地址数量: {len(related_addresses) if related_addresses else 0}")
@@ -711,6 +723,14 @@ def analyze_behavior_new(target_contract=None, start_block=None, end_block=None,
         
         # 继续现有的处理逻辑...
         
+        # 如果有调用图，添加到分析中
+        if call_graph:
+            # 分析调用图中的模式
+            call_patterns = analyze_call_patterns(call_graph, target_contract)
+            behavior_data['call_patterns'] = call_patterns
+        
+        return behavior_data
+        
     except KeyError as ke:
         error_msg = f"缺少必要字段：{str(ke)}"
         print(f"处理交易数据时出错: {error_msg}")
@@ -721,6 +741,151 @@ def analyze_behavior_new(target_contract=None, start_block=None, end_block=None,
         traceback.print_exc()
         return f"在处理您的查询时遇到了错误：{str(e)}"
 
+def analyze_call_patterns(call_graph, target_contract):
+    """
+    分析调用图中的模式，寻找可能的攻击路径
+    """
+    patterns = {
+        'unusual_paths': [],
+        'circular_calls': [],
+        'high_value_transfers': [],
+        'suspicious_contracts': set()
+    }
+    
+    for tx_hash, data in call_graph.items():
+        # 检查是否有循环调用
+        circular_paths = find_circular_paths(data['call_hierarchy'])
+        if circular_paths:
+            patterns['circular_calls'].append({
+                'tx_hash': tx_hash,
+                'paths': circular_paths
+            })
+        
+        # 检查高价值转账
+        high_value_calls = find_high_value_transfers(data['call_hierarchy'])
+        if high_value_calls:
+            patterns['high_value_transfers'].append({
+                'tx_hash': tx_hash,
+                'transfers': high_value_calls
+            })
+        
+        # 检查不寻常的调用路径（长度超过3的路径）
+        unusual_paths = find_unusual_paths(data['call_hierarchy'], target_contract)
+        if unusual_paths:
+            patterns['unusual_paths'].append({
+                'tx_hash': tx_hash,
+                'paths': unusual_paths
+            })
+            
+            # 将不寻常路径中的合约添加到可疑合约集合
+            for path in unusual_paths:
+                for address in path['addresses']:
+                    patterns['suspicious_contracts'].add(address)
+    
+    # 转换为列表以便JSON序列化
+    patterns['suspicious_contracts'] = list(patterns['suspicious_contracts'])
+    return patterns
+
+def find_circular_paths(call_hierarchy):
+    """
+    在调用层级中查找循环调用
+    """
+    circular_paths = []
+    address_path = []
+    
+    def dfs(node, current_path=None):
+        if current_path is None:
+            current_path = []
+        
+        # 当前地址
+        addr = node['to'].lower()
+        
+        # 如果当前地址已经在路径中，发现循环
+        if addr in current_path:
+            start_idx = current_path.index(addr)
+            circular_path = current_path[start_idx:] + [addr]
+            circular_paths.append({
+                'path': circular_path,
+                'description': f"发现循环调用: {' -> '.join(circular_path)}"
+            })
+            return
+        
+        # 添加当前地址到路径
+        new_path = current_path + [addr]
+        
+        # 递归处理子调用
+        for child in node.get('children', []):
+            dfs(child, new_path)
+    
+    # 从根节点开始DFS
+    dfs(call_hierarchy, [call_hierarchy['from'].lower()])
+    
+    return circular_paths
+
+def find_high_value_transfers(call_hierarchy):
+    """
+    在调用层级中查找高价值转账
+    """
+    high_value_transfers = []
+    
+    def dfs(node):
+        # 检查当前调用是否包含高价值转账
+        if node.get('value', '0') != '0':
+            try:
+                value = int(node['value'], 16) if node['value'].startswith('0x') else int(node['value'])
+                # 转换为ETH (1 ETH = 10^18 wei)
+                eth_value = value / 10**18
+                if eth_value > 1.0:  # 超过1 ETH的转账
+                    high_value_transfers.append({
+                        'from': node['from'],
+                        'to': node['to'],
+                        'value': eth_value,
+                        'description': f"{eth_value} ETH 从 {node['from']} 转移到 {node['to']}"
+                    })
+            except:
+                pass
+        
+        # 递归处理子调用
+        for child in node.get('children', []):
+            dfs(child)
+    
+    # 从根节点开始DFS
+    dfs(call_hierarchy)
+    
+    return high_value_transfers
+
+def find_unusual_paths(call_hierarchy, target_contract):
+    """
+    在调用层级中查找不寻常的路径
+    """
+    unusual_paths = []
+    
+    def dfs(node, current_path=None, depth=0):
+        if current_path is None:
+            current_path = []
+        
+        # 当前地址
+        addr = node['to'].lower()
+        
+        # 添加当前地址到路径
+        new_path = current_path + [addr]
+        
+        # 如果路径长度超过3且包含目标合约，认为是不寻常的路径
+        if depth >= 3 and target_contract.lower() in new_path:
+            unusual_paths.append({
+                'addresses': new_path,
+                'depth': depth,
+                'description': f"深度为{depth}的调用路径: {' -> '.join(new_path)}"
+            })
+        
+        # 递归处理子调用
+        for child in node.get('children', []):
+            dfs(child, new_path, depth + 1)
+    
+    # 从根节点开始DFS
+    dfs(call_hierarchy, [call_hierarchy['from'].lower()])
+    
+    return unusual_paths
 
 def analyze_behavior(target_contract=None):
     db = next(get_db())
@@ -840,7 +1005,9 @@ def get_transaction_trace(tx_hash, network="ethereum"):
                     result = response.json()
                     if 'result' in result:
                         print(f"成功获取交易 {tx_hash} 的跟踪信息")
-                        return result['result']
+                        trace_data = result['result']
+                        print(f"预览trace数据: {str(trace_data)[:200]}...")  # 仅显示前200个字符
+                        return trace_data
                     elif 'error' in result:
                         print(f"获取跟踪信息失败: {result['error']}")
                         # 检查是否是格式错误，如果是，可以尝试调整格式后重试
@@ -976,79 +1143,97 @@ def _get_transaction_trace_alternative(tx_hash, network="ethereum"):
         traceback.print_exc()
         return None
 
-def extract_addresses_from_trace(trace_result):
-    """
-    从交易跟踪结果中提取所有相关地址
-    增强版本，能处理不同格式的trace结果及异常情况
-    """
-    from web3 import Web3
-    
+def extract_addresses_from_trace(trace_data):
+    """从交易追踪数据中提取所有相关合约地址"""
     addresses = set()
     
-    # 如果trace_result为空或非预期类型，直接返回空集合
-    if not trace_result or not (isinstance(trace_result, dict) or isinstance(trace_result, list)):
-        print(f"跳过无效的trace结果: {type(trace_result)}")
+    print("="*50)
+    print("开始处理trace数据")
+    
+    # 检查trace_data是否为None
+    if trace_data is None:
+        print("警告: trace_data为None")
         return addresses
     
-    def process_trace(trace):
-        if not isinstance(trace, dict):
-            return
-        
-        # 处理action中的地址（确保字段存在且为字典）
-        action = trace.get('action', {})
-        if not isinstance(action, dict):
-            action = {}
-            
-        for field in ['from', 'to', 'address', 'refundAddress', 'author', 'caller']:
-            if field in action and action[field]:
-                try:
-                    value = action[field]
-                    # 确保值是字符串且格式正确
-                    if isinstance(value, str) and value.startswith('0x') and len(value) >= 42:
-                        if Web3.is_address(value):
-                            addr = Web3.to_checksum_address(value).lower()
-                            addresses.add(addr)
-                except Exception as e:
-                    print(f"处理地址字段 {field}={action.get(field)} 时出错: {str(e)}")
-        
-        # 处理input数据（确保字段存在且非空）
-        input_data = action.get('input', '')
-        if input_data and isinstance(input_data, str) and len(input_data) > 10:  # 至少包含方法ID
-            try:
-                extracted = extract_addresses_from_input(input_data)
-                addresses.update(extracted)
-            except Exception as e:
-                print(f"从input提取地址时出错: {str(e)}")
-        
-        # 处理结果中的地址（确保字段存在且为字典）
-        result = trace.get('result', {})
-        if not isinstance(result, dict):
-            result = {}
-            
-        for field in ['address', 'newContract', 'contractAddress']:
-            if field in result and result[field]:
-                try:
-                    value = result[field]
-                    if isinstance(value, str) and Web3.is_address(value):
-                        addr = Web3.to_checksum_address(value).lower()
-                        addresses.add(addr)
-                except Exception as e:
-                    print(f"处理结果字段 {field}={result.get(field)} 时出错: {str(e)}")
-        
-        # 递归处理子trace
-        if 'calls' in trace and isinstance(trace['calls'], list):
-            for subtrace in trace['calls']:
-                process_trace(subtrace)
+    # 打印trace_data的结构（用于调试）
+    print(f"Trace数据类型: {type(trace_data)}")
+    if isinstance(trace_data, list):
+        print(f"Trace数据是一个列表，长度: {len(trace_data)}")
+        if len(trace_data) > 0:
+            print(f"第一个元素类型: {type(trace_data[0])}")
+            if isinstance(trace_data[0], dict):
+                print(f"第一个元素键: {trace_data[0].keys()}")
+    elif isinstance(trace_data, dict):
+        print(f"Trace数据键: {trace_data.keys()}")
+        # 打印完整的前三层结构
+        print("前三层结构预览:")
+        try:
+            import json
+            preview = json.dumps(trace_data, indent=2)[:500]  # 限制输出长度
+            print(preview)
+        except:
+            print("无法序列化trace_data")
     
-    # 处理所有trace
+    # 处理不同格式的trace数据
     try:
-        if isinstance(trace_result, list):
-            for trace in trace_result:
-                process_trace(trace)
-        elif isinstance(trace_result, dict):
-            process_trace(trace_result)
+        # 处理列表格式的trace数据
+        if isinstance(trace_data, list):
+            for item in trace_data:
+                if isinstance(item, dict):
+                    # 处理列表中的每个trace项
+                    if 'action' in item:
+                        action = item['action']
+                        # 提取from地址
+                        if 'from' in action and action['from']:
+                            try:
+                                addr = action['from']
+                                if Web3.is_address(addr):
+                                    addresses.add(Web3.to_checksum_address(addr).lower())
+                                    print(f"从trace列表项提取到from地址: {addr}")
+                            except Exception as e:
+                                print(f"处理from地址时出错: {str(e)}")
+                        
+                        # 提取to地址
+                        if 'to' in action and action['to']:
+                            try:
+                                addr = action['to']
+                                if Web3.is_address(addr):
+                                    addresses.add(Web3.to_checksum_address(addr).lower())
+                                    print(f"从trace列表项提取到to地址: {addr}")
+                            except Exception as e:
+                                print(f"处理to地址时出错: {str(e)}")
+        
+        # 处理字典格式的trace数据
+        elif isinstance(trace_data, dict):
+            # 处理action字段
+            if 'action' in trace_data:
+                action = trace_data['action']
+                
+                # 提取from地址
+                if 'from' in action and action['from']:
+                    try:
+                        addr = action['from']
+                        if Web3.is_address(addr):
+                            addresses.add(Web3.to_checksum_address(addr).lower())
+                            print(f"从trace提取到from地址: {addr}")
+                    except Exception as e:
+                        print(f"处理from地址时出错: {str(e)}")
+                
+                # 提取to地址
+                if 'to' in action and action['to']:
+                    try:
+                        addr = action['to']
+                        if Web3.is_address(addr):
+                            addresses.add(Web3.to_checksum_address(addr).lower())
+                            print(f"从trace提取到to地址: {addr}")
+                    except Exception as e:
+                        print(f"处理to地址时出错: {str(e)}")
     except Exception as e:
         print(f"处理trace数据时出错: {str(e)}")
+        traceback.print_exc()
+    
+    print(f"从trace中共提取到 {len(addresses)} 个地址")
+    print("="*50)
     
     return addresses
 
@@ -1136,6 +1321,430 @@ def get_internal_transactions_from_etherscan(tx_hash, network="ethereum"):
         print(f"获取内部交易失败: {str(e)}")
         
     return None
+
+def is_dex_pool_contract(contract_address, contract_code=None, contract_abi=None):
+    """检查合约是否为DEX池子合约"""
+    import json
+    from web3 import Web3
+    
+    try:
+        # 定义DEX池子的特征模式
+        function_patterns = [
+            'swap',
+            'addLiquidity',
+            'removeLiquidity',
+            'mint',
+            'burn',
+            'sync'
+        ]
+        
+        # 定义变量名模式
+        variable_patterns = [
+            'token0',
+            'token1',
+            'reserve0',
+            'reserve1',
+            'pool',
+            'pair',
+            'liquidity'
+        ]
+        
+        # 定义DEX工厂合约地址
+        dex_factory_addresses = [
+            '0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f',  # Uniswap V2
+            '0x1f98431c8ad98523631ae4a59f267346ea31f984',  # Uniswap V3
+            '0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac',  # Sushiswap
+            '0xba12222222228d8ba445958a75a0704d566bf2c8',  # Balancer V2
+            '0x0841bd0b734e4f5853f0dd8d7ea041c241fb0da6',  # Curve
+        ]
+        
+        # 1. 检查合约地址是否是已知DEX池子地址
+        if contract_address.lower() in dex_factory_addresses:
+            return True
+        
+        # 2. 检查ABI中的函数名
+        if contract_abi:
+            if isinstance(contract_abi, str):
+                try:
+                    abi_json = json.loads(contract_abi)
+                except Exception:
+                    abi_json = []
+            else:
+                abi_json = contract_abi
+                
+            for item in abi_json:
+                if isinstance(item, dict) and item.get('type') == 'function':
+                    func_name = item.get('name', '').lower()
+                    if any(pattern in func_name for pattern in function_patterns):
+                        return True
+        
+        # 3. 检查源代码中的特征
+        if contract_code:
+            contract_code_lower = contract_code.lower()
+            # 检查函数名
+            for pattern in function_patterns:
+                if pattern in contract_code_lower:
+                    return True
+            
+            # 检查变量名
+            for pattern in variable_patterns:
+                if pattern in contract_code_lower:
+                    return True
+                    
+        # 4. 如果没有代码或ABI，尝试获取代码并检查
+        if not contract_code and not contract_abi:
+            from database import get_db
+            from database.models import Contract
+            
+            db = next(get_db())
+            contract = db.query(Contract).filter(Contract.target_contract == contract_address.lower()).first()
+            
+            if contract:
+                if contract.source_code:
+                    # 检查源代码
+                    return is_dex_pool_contract(contract_address, contract.source_code, contract.abi)
+            
+        return False
+        
+    except Exception as e:
+        print(f"检查合约 {contract_address} 是否为DEX池子时出错: {str(e)}")
+        return False  # 出错时返回False而不是中断
+
+def process_trace_recursively(trace, parent_node, related_contracts, call_path, current_depth, max_depth, pruning_enabled=True):
+    """递归处理trace数据，支持多种trace格式"""
+    if current_depth >= max_depth:
+        return
+    
+    try:
+        # 处理单个trace格式
+        if isinstance(trace, dict):
+            # 新的trace结构 (trace_transaction 格式)
+            if 'action' in trace:
+                process_single_trace(trace, parent_node, related_contracts, call_path, current_depth, max_depth, pruning_enabled)
+            # 旧格式
+            elif 'from' in trace and 'to' in trace:
+                process_old_format_trace(trace, parent_node, related_contracts, call_path, current_depth, max_depth, pruning_enabled)
+        
+        # 处理trace列表
+        elif isinstance(trace, list):
+            for subtrace in trace:
+                process_trace_recursively(subtrace, parent_node, related_contracts, call_path, current_depth, max_depth, pruning_enabled)
+    
+    except Exception as e:
+        print(f"递归处理trace时出错：{str(e)}")
+        import traceback
+        traceback.print_exc()
+
+def process_single_trace(call, parent_node, related_contracts, call_path, current_depth, max_depth, pruning_enabled=True):
+    """处理单个trace调用，支持多种trace格式"""
+    from web3 import Web3
+    
+    try:
+        # 处理新的trace结构格式 (trace_transaction API返回的格式)
+        if 'action' in call:
+            action = call['action']
+            from_address = action.get('from', '').lower() if action.get('from') else ''
+            to_address = action.get('to', '').lower() if action.get('to') else ''
+            input_data = action.get('input', '0x')
+            call_type = action.get('callType', 'call')  # call, delegatecall, staticcall, etc.
+            value = action.get('value', '0x0')
+            
+            # 检查地址是否有效
+            has_from = bool(from_address and Web3.is_address(from_address))
+            has_to = bool(to_address and Web3.is_address(to_address))
+            
+            print(f"处理trace: from={from_address}({has_from}), to={to_address}({has_to}), type={call_type}")
+            
+            # 只有当from和to地址都有效时才进行处理
+            if has_from or has_to:
+                # 将有效地址添加到相关合约集合
+                if has_from:
+                    related_contracts.add(from_address)
+                if has_to:
+                    related_contracts.add(to_address)
+                
+                # 尝试提取方法ID
+                method_id = "0x"
+                if input_data and len(input_data) >= 10:
+                    method_id = input_data[:10]  # 包含0x前缀的方法ID
+                
+                # 创建新的调用节点
+                call_node = {
+                    'from': from_address if has_from else "unknown",
+                    'to': to_address if has_to else "unknown",
+                    'method_id': method_id,
+                    'call_type': call_type,
+                    'value': value,
+                    'children': []
+                }
+                
+                # 将调用节点添加到父节点的children列表
+                parent_node['children'].append(call_node)
+                
+                # 从input数据中提取可能的地址
+                if input_data and len(input_data) > 10:
+                    try:
+                        extracted_addresses = extract_addresses_from_input(input_data)
+                        related_contracts.update(extracted_addresses)
+                    except Exception as e:
+                        print(f"从input提取地址时出错: {str(e)}")
+                
+                # 检查是否需要剪枝
+                if pruning_enabled and has_to:
+                    try:
+                        if is_dex_pool_contract(to_address):
+                            call_node['pruned'] = True
+                            call_node['pruned_reason'] = 'DEX_POOL'
+                            print(f"剪枝: 跳过DEX池子合约 {to_address}")
+                            return
+                    except Exception as e:
+                        print(f"检查DEX池子合约时出错: {str(e)}")
+                
+                # 构建新的调用路径
+                new_call_path = call_path
+                if has_to:
+                    new_call_path = call_path + [to_address]
+                
+                # 递归处理子trace
+                if 'subtraces' in call and call['subtraces'] > 0:
+                    if 'calls' in call and isinstance(call['calls'], list):
+                        for subcall in call['calls']:
+                            process_trace_recursively(
+                                subcall, 
+                                call_node,
+                                related_contracts, 
+                                new_call_path,
+                                current_depth + 1, 
+                                max_depth,
+                                pruning_enabled
+                            )
+            else:
+                print(f"跳过无效地址的trace")
+        
+        # 处理旧格式的trace (直接包含from/to字段的格式)
+        elif 'from' in call and 'to' in call:
+            from_address = call.get('from', '').lower() if call.get('from') else ''
+            to_address = call.get('to', '').lower() if call.get('to') else ''
+            
+            # 检查地址是否有效
+            has_from = bool(from_address and Web3.is_address(from_address))
+            has_to = bool(to_address and Web3.is_address(to_address))
+            
+            if has_from or has_to:
+                # 将有效地址添加到相关合约集合
+                if has_from:
+                    related_contracts.add(from_address)
+                if has_to:
+                    related_contracts.add(to_address)
+                
+                # 创建新的调用节点
+                call_node = {
+                    'from': from_address if has_from else "unknown",
+                    'to': to_address if has_to else "unknown",
+                    'method_id': call.get('method_id', '0x'),
+                    'call_type': call.get('type', 'call'),
+                    'value': call.get('value', '0x0'),
+                    'children': []
+                }
+                
+                # 将调用节点添加到父节点的children列表
+                parent_node['children'].append(call_node)
+                
+                # 构建新的调用路径
+                new_call_path = call_path
+                if has_to:
+                    new_call_path = call_path + [to_address]
+                
+                # 递归处理子trace
+                if 'children' in call and isinstance(call['children'], list):
+                    for child in call['children']:
+                        process_trace_recursively(
+                            child,
+                            call_node,
+                            related_contracts,
+                            new_call_path,
+                            current_depth + 1,
+                            max_depth,
+                            pruning_enabled
+                        )
+            else:
+                print(f"跳过无效地址的旧格式trace")
+        else:
+            print(f"未识别的trace格式: {list(call.keys()) if isinstance(call, dict) else type(call)}")
+    
+    except Exception as e:
+        print(f"处理trace时出错: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+def process_old_format_trace(trace, parent_node, related_contracts, call_path, current_depth, max_depth, pruning_enabled=True):
+    """处理旧格式的trace调用"""
+    from web3 import Web3
+    
+    try:
+        from_address = trace.get('from', '').lower() if trace.get('from') else ''
+        to_address = trace.get('to', '').lower() if trace.get('to') else ''
+        
+        # 检查地址是否有效
+        has_from = bool(from_address and Web3.is_address(from_address))
+        has_to = bool(to_address and Web3.is_address(to_address))
+        
+        print(f"处理旧格式trace: from={from_address}({has_from}), to={to_address}({has_to})")
+        
+        if has_from or has_to:
+            # 将有效地址添加到相关合约集合
+            if has_from:
+                related_contracts.add(from_address)
+            if has_to:
+                related_contracts.add(to_address)
+            
+            # 创建新的调用节点
+            call_node = {
+                'from': from_address if has_from else "unknown",
+                'to': to_address if has_to else "unknown",
+                'method_id': trace.get('method_id', '0x'),
+                'call_type': trace.get('type', 'call'),
+                'value': trace.get('value', '0x0'),
+                'children': []
+            }
+            
+            # 将调用节点添加到父节点的children列表
+            parent_node['children'].append(call_node)
+            
+            # 构建新的调用路径
+            new_call_path = call_path
+            if has_to:
+                new_call_path = call_path + [to_address]
+            
+            # 递归处理子trace
+            if 'children' in trace and isinstance(trace['children'], list):
+                for child in trace['children']:
+                    process_trace_recursively(
+                        child,
+                        call_node,
+                        related_contracts,
+                        new_call_path,
+                        current_depth + 1,
+                        max_depth,
+                        pruning_enabled
+                    )
+        else:
+            print(f"跳过无效地址的旧格式trace")
+    
+    except Exception as e:
+        print(f"处理旧格式trace时出错: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+def build_transaction_call_graph(target_contract, start_block, end_block, max_depth=3, pruning_enabled=True):
+    """构建交易调用图"""
+    import traceback
+    import json
+    from database import get_db
+    from database.models import UserInteraction, Contract
+    from web3 import Web3
+    
+    try:
+        print(f"开始构建交易调用图，目标合约：{target_contract}，区块范围：{start_block}-{end_block}")
+        
+        db = next(get_db())
+        call_graph = {}
+        processed_txs = set()
+        related_contracts = set()
+        
+        try:
+            # 查询所有相关交易
+            interactions = db.query(UserInteraction).filter(
+                UserInteraction.target_contract == target_contract.lower(),
+                UserInteraction.block_number >= start_block,
+                UserInteraction.block_number <= end_block
+            ).all()
+            
+            print(f"找到 {len(interactions)} 笔与合约 {target_contract} 相关的交易")
+            
+            for interaction in interactions:
+                tx_hash = interaction.tx_hash
+                
+                # 跳过已处理的交易
+                if tx_hash in processed_txs:
+                    continue
+                
+                processed_txs.add(tx_hash)
+                print(f"处理交易：{tx_hash}")
+                
+                # 初始化这个交易的调用图
+                call_graph[tx_hash] = {
+                    'call_hierarchy': {},
+                    'related_contracts': set()
+                }
+                
+                # 获取交易trace
+                trace_data = interaction.trace_data
+                if trace_data:
+                    try:
+                        trace_json = json.loads(trace_data)
+                        print(f"成功加载trace数据：{type(trace_json)}")
+                        
+                        # 构建初始调用节点
+                        root_node = {
+                            'from': interaction.caller_contract,
+                            'to': interaction.target_contract,
+                            'method': interaction.method_name,
+                            'method_id': interaction.input_data[:10] if interaction.input_data else "0x",
+                            'input': interaction.input_data,
+                            'children': []
+                        }
+                        
+                        call_graph[tx_hash]['call_hierarchy'] = root_node
+                        call_path = [interaction.target_contract]
+                        
+                        # 处理trace
+                        process_trace_recursively(
+                            trace_json, 
+                            root_node, 
+                            call_graph[tx_hash]['related_contracts'],
+                            call_path,
+                            0,
+                            max_depth,
+                            pruning_enabled
+                        )
+                        
+                        # 添加到总体的相关合约中
+                        related_contracts.update(call_graph[tx_hash]['related_contracts'])
+                        
+                    except Exception as e:
+                        print(f"处理交易trace时出错：{str(e)}")
+                        traceback.print_exc()
+                else:
+                    print(f"交易 {tx_hash} 没有trace数据")
+            
+            # 递归处理相关合约的交互
+            if related_contracts:
+                print(f"发现 {len(related_contracts)} 个相关合约，开始递归处理它们的交互")
+                process_related_contracts(
+                    call_graph, 
+                    processed_txs, 
+                    related_contracts,
+                    target_contract,
+                    start_block,
+                    end_block,
+                    1,
+                    max_depth,
+                    pruning_enabled
+                )
+            
+            print(f"交易调用图构建完成，共包含 {len(call_graph)} 笔交易")
+            return call_graph
+            
+        except Exception as e:
+            print(f"查询交易时出错：{str(e)}")
+            traceback.print_exc()
+            return {}
+        
+    except Exception as e:
+        print(f"构建交易调用图时出错：{str(e)}")
+        traceback.print_exc()
+        return {}
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--query":
