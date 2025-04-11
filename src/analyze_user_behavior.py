@@ -138,7 +138,7 @@ from database.crud import (
 from config.settings import settings
 
 BEHAVIOR_PROMPT = """
-As a blockchain security analysis expert, please conduct a comprehensive security analysis of contract interactions within the specified block range, focusing on:
+As a blockchain security analysis expert, please conduct a comprehensive security analysis of the target contract and all related contracts within the specified block range, focusing on:
 
 1. Interaction Behavior Analysis
    - Identify suspicious call patterns and frequency anomalies
@@ -168,8 +168,8 @@ As a blockchain security analysis expert, please conduct a comprehensive securit
    - Analyze possible attack vectors
 
 Analysis data:
-Target contract and related contract code (including decompiled code):
-{contract_code_context}
+Target contract and related contract code:
+{code_context}
 
 Method call statistics:
 {method_list}
@@ -364,21 +364,27 @@ def load_contract_code(db, target_contract):
     """加载合约代码，优先使用源代码，其次是反编译代码"""
     contract_info = get_contract_full_info(db, target_contract)
     
-    if contract_info and contract_info.get('source_code'):
-        print(f"使用源代码分析合约 {target_contract}")
-        return {
-            'source_code': contract_info['source_code'],
-            'contract_type': 'source_code'
-        }
-    elif contract_info and contract_info.get('decompiled_code'):
-        print(f"使用反编译代码分析合约 {target_contract}")
-        return {
-            'decompiled_code': contract_info['decompiled_code'],
-            'contract_type': 'decompiled_code'
-        }
-    else:
-        print(f"未找到合约 {target_contract} 的代码")
-        return None
+    if contract_info:
+        # 检查源代码存在且不为空
+        has_source = bool(contract_info.get('source_code'))
+        if has_source:
+            source_code = contract_info['source_code']
+            # 确保源码不是空字符串、空列表、空字典等
+            if source_code and not (isinstance(source_code, (list, dict)) and len(source_code) == 0):
+                print(f"使用源代码分析合约 {target_contract}")
+                return {
+                    'source_code': source_code,
+                    'contract_type': 'source_code'
+                }
+        elif contract_info.get('decompiled_code'):
+            print(f"使用反编译代码分析合约 {target_contract}")
+            return {
+                'decompiled_code': contract_info['decompiled_code'],
+                'contract_type': 'decompiled_code'
+            }
+    
+    print(f"未找到合约 {target_contract} 的代码")
+    return None
 
 def generate_code_context(contracts_chain):
     """生成LLM需要的代码上下文"""
@@ -427,13 +433,13 @@ def generate_code_context(contracts_chain):
                     code_sections.append(
                         f"// 反编译代码（{contract['type']}合约 {contract['address']}）\n"
                                     f"{decompiled_code_str}"
-                        )
+                    )
             except Exception as e:
                 print(f"处理反编译代码时出错: {str(e)}")
                 code_sections.append(
                     f"// 反编译代码（{contract['type']}合约 {contract['address']}）\n"
                     f"// 处理反编译代码时出错: {str(e)}"
-                )
+            )
         
         # ABI信息
         abi = contract.get("abi", [])
@@ -502,7 +508,7 @@ def analyze_input_data(input_data, abi):
                                 'method': decoded[0].fn_name,
                                                         'params': dict(decoded[1]),
                                                         'extracted_addresses': extracted_addresses
-                            }
+                            }       
                 except ValueError as e:
                     if "Could not find any function with matching selector" in str(e):
                         # 这是正常的，意味着ABI中没有匹配的函数
@@ -520,14 +526,14 @@ def analyze_input_data(input_data, abi):
         method_id = input_data[:8]
         params = []
         data = input_data[8:]
-    
+        
         # 每32字节（64个字符）为一个参数
         for i in range(0, len(data), 64):
-                if i + 64 > len(data):
-                    # 处理不完整的参数
-                    param = data[i:]
-                    params.append(f"Incomplete: {param}")
-                    continue
+                    if i + 64 > len(data):
+                        # 处理不完整的参数
+                        param = data[i:]
+                        params.append(f"Incomplete: {param}")
+                        continue
                 
         param = data[i:i+64]
         # 检查是否是地址
@@ -566,13 +572,17 @@ def process_user_query(params):
     print(f"查询参数: {params}")
     
     try:
+        # 验证必要参数并处理参数名称不一致问题
+        if 'contract_address' in params and 'target_contract' not in params:
+            params['target_contract'] = params['contract_address']
+            
         # 验证必要参数
-        for key in ['contract_address', 'start_block', 'end_block']:
+        for key in ['target_contract', 'start_block', 'end_block']:
             if key not in params:
                 raise KeyError(f"缺少必要参数: {key}")
                 
         # 打印参数详情
-        print(f"合约地址: {params['contract_address']}")
+        print(f"合约地址: {params['target_contract']}")
         print(f"区块范围: {params['start_block']} - {params['end_block']}")
         
         # 添加调用链分析
@@ -591,7 +601,7 @@ def process_user_query(params):
         # 分析行为
         print("\n=== 分析合约行为 ===")
         behavior_analysis = analyze_behavior_new(
-            target_contract=params['contract_address'],
+            target_contract=params['target_contract'],
             start_block=params['start_block'],
             end_block=params['end_block'],
             related_addresses=params.get('related_addresses', []),
@@ -635,14 +645,14 @@ def save_report(report_content, params):
         
         # 生成文件名
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        contract_addr = params.get('contract_address', 'unknown')[:10]
+        contract_addr = params.get('target_contract', 'unknown')[:10]
         blocks = f"{params.get('start_block', 0)}-{params.get('end_block', 0)}"
         filename = f"reports/security_analysis_{contract_addr}_{blocks}_{timestamp}.txt"
         
         # 添加报告头部信息
         header = f"""安全分析报告
 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-目标合约: {params.get('contract_address')}
+目标合约: {params.get('target_contract', '未指定')}
 区块范围: {params.get('start_block', 0)} - {params.get('end_block', 0)}
 分析类型: {params.get('analysis_type', '未指定')}
 原始查询: {params.get('user_input', '未指定')}
@@ -689,15 +699,6 @@ def analyze_behavior_new(target_contract=None, start_block=None, end_block=None,
             print(f"未找到任何符合条件的交易记录！")
             return "未找到任何符合条件的交易记录，请检查合约地址和区块范围是否正确。"
         
-        # 打印第一个交易记录的详细信息，用于调试
-        if transactions:
-            first_tx = transactions[0]
-            print("第一个交易记录:")
-            print(f"  - tx_hash: {first_tx.tx_hash}")
-            print(f"  - block_number: {getattr(first_tx, 'block_number', 'None')}")
-            print(f"  - method_name: {getattr(first_tx, 'method_name', 'None')}")
-            print(f"  - timestamp: {getattr(first_tx, 'timestamp', 'None')}")
-        
         # 处理数据前，确保所有交易记录都有必要字段
         for idx, tx in enumerate(transactions):
             if not hasattr(tx, 'block_number') or tx.block_number is None:
@@ -721,7 +722,145 @@ def analyze_behavior_new(target_contract=None, start_block=None, end_block=None,
                     tx.block_number = start_block or 0
                     print(f"获取block_number时出错: {str(e)}，使用默认值: {tx.block_number}")
         
-        # 继续现有的处理逻辑...
+        # 新增：收集并去重所有相关合约地址
+        all_contracts = set([target_contract.lower()])
+        
+        # 添加所有相关地址（去重）
+        if related_addresses:
+            all_contracts.update([addr.lower() for addr in related_addresses if Web3.is_address(addr)])
+        
+        # 移除零地址、预编译合约等特殊地址
+        special_addresses = {
+            '0x0000000000000000000000000000000000000000',
+            '0x0000000000000000000000000000000000000001',
+            '0x0000000000000000000000000000000000000002',
+            '0x0000000000000000000000000000000000000003',
+            '0x0000000000000000000000000000000000000004',
+            '0x0000000000000000000000000000000000000005',
+            '0x0000000000000000000000000000000000000006',
+            '0x0000000000000000000000000000000000000007',
+            '0x0000000000000000000000000000000000000008',
+            '0x0000000000000000000000000000000000000009'
+        }
+        all_contracts = all_contracts - special_addresses
+        
+        print(f"去重后需要分析的合约数量: {len(all_contracts)}")
+        
+        # 创建一个专用的ContractAnalyzer实例用于获取合约元数据
+        from main import ContractAnalyzer
+        analyzer = ContractAnalyzer()
+        
+        # 收集每个合约的代码
+        contracts_code = {}
+        for contract_addr in all_contracts:
+            try:
+                # 1. 先尝试加载已有代码
+                contract_code = load_contract_code(db, contract_addr)
+                
+                if contract_code:
+                    contracts_code[contract_addr] = contract_code
+                    print(f"已从数据库加载合约 {contract_addr} 的代码")
+                else:
+                    print(f"未找到合约 {contract_addr} 的代码，尝试获取源码")
+                    
+                    # 2. 尝试通过API获取合约源码
+                    try:
+                        # 创建一个ContractPipeline实例
+                        from main import ContractPipeline
+                        pipeline = ContractPipeline(analyzer)
+                        
+                        # 通过pipeline获取合约信息（包括源码）
+                        contract_info = pipeline.process_with_metadata(contract_addr)
+                        
+                        # 重新尝试从数据库加载（应该有了）
+                        contract_code = load_contract_code(db, contract_addr)
+                        if contract_code:
+                            contracts_code[contract_addr] = contract_code
+                            print(f"已成功加载新获取的合约 {contract_addr} 代码")
+                            # 成功获取源码后，继续处理下一个合约
+                            continue
+                        else:
+                            # 如果API获取成功但数据库加载仍然失败，说明有问题
+                            print(f"警告：合约 {contract_addr} 源码已获取但加载失败，检查数据库")
+                    except Exception as e:
+                        print(f"通过API获取合约 {contract_addr} 源码失败: {str(e)}")
+                    
+                    # 3. 只有在无法获取源码的情况下，才尝试反编译字节码
+                    print(f"尝试反编译合约 {contract_addr}")
+                    try:
+                        # 获取字节码
+                        bytecode = analyzer.get_bytecode(contract_addr)
+                        
+                        if bytecode and len(bytecode) > 2:  # 确保不是空字节码
+                            # 反编译
+                            from ethereum.decompiler.gigahorse_wrapper import decompile_bytecode
+                            decompiled_code = decompile_bytecode(bytecode)
+                            
+                            if decompiled_code:
+                                # 保存反编译结果到数据库
+                                from database.crud import update_decompiled_code
+                                update_decompiled_code(db, contract_addr, decompiled_code)
+                                
+                                # 添加到当前分析中
+                                contracts_code[contract_addr] = {
+                                    'decompiled_code': decompiled_code,
+                                    'contract_type': 'decompiled_code'
+                                }
+                                print(f"成功反编译合约 {contract_addr}")
+                            else:
+                                print(f"合约 {contract_addr} 反编译失败")
+                        else:
+                            print(f"合约 {contract_addr} 没有字节码或是EOA账户")
+                    except Exception as e:
+                        print(f"处理合约 {contract_addr} 字节码和反编译时出错: {str(e)}")
+            except Exception as e:
+                print(f"加载合约 {contract_addr} 代码时出错: {str(e)}")
+        
+        print(f"成功加载 {len(contracts_code)} 个合约的代码")
+        
+        # 生成代码上下文
+        code_context = ""
+        for addr, code in contracts_code.items():
+            context = f"合约 {addr} 的代码:\n"
+            if isinstance(code, dict):
+                if code.get('source_code'):
+                    # 处理可能的格式化问题
+                    src_code = code['source_code']
+                    if isinstance(src_code, list):
+                        src_code = "\n".join(src_code)
+                    elif isinstance(src_code, dict):
+                        src_code = json.dumps(src_code, indent=2)
+                    
+                    context += f"源代码：\n{src_code}\n\n"
+                elif code.get('decompiled_code'):
+                    # 处理可能的格式化问题
+                    decompiled = code['decompiled_code']
+                    if isinstance(decompiled, dict):
+                        decompiled = json.dumps(decompiled, indent=2)
+                    
+                    context += f"反编译代码：\n{decompiled}\n\n"
+            code_context += context + "\n" + "="*50 + "\n"
+        
+        # 统计方法调用频率
+        method_calls = {}
+        for tx in transactions:
+            method_name = getattr(tx, 'method_name', 'unknown')
+            if method_name not in method_calls:
+                method_calls[method_name] = 0
+            method_calls[method_name] += 1
+            
+        # 按频率排序
+        sorted_methods = sorted(method_calls.items(), key=lambda x: x[1], reverse=True)
+        method_list = "\n".join([f"{method}: {count} 次调用" for method, count in sorted_methods])
+        
+        # 构建行为分析数据结构
+        behavior_data = {
+            "target_contract": target_contract,
+            "block_range": f"{start_block}-{end_block}",
+            "related_contracts": list(all_contracts),
+            "code_context": code_context,
+            "method_list": method_list
+        }
         
         # 如果有调用图，添加到分析中
         if call_graph:
@@ -731,11 +870,6 @@ def analyze_behavior_new(target_contract=None, start_block=None, end_block=None,
         
         return behavior_data
         
-    except KeyError as ke:
-        error_msg = f"缺少必要字段：{str(ke)}"
-        print(f"处理交易数据时出错: {error_msg}")
-        traceback.print_exc()
-        return f"在处理您的查询时遇到了错误：缺少必要字段 '{str(ke)}'"
     except Exception as e:
         print(f"处理交易数据时出错: {str(e)}")
         traceback.print_exc()
@@ -931,7 +1065,7 @@ def analyze_behavior(target_contract=None):
     
     # 生成报告
     full_prompt = BEHAVIOR_PROMPT.format(
-        contract_code_context=code_context,
+        code_context=code_context,
         method_list=method_list_str
     )
     
@@ -1637,114 +1771,246 @@ def process_old_format_trace(trace, parent_node, related_contracts, call_path, c
         traceback.print_exc()
 
 def build_transaction_call_graph(target_contract, start_block, end_block, max_depth=3, pruning_enabled=True):
-    """构建交易调用图"""
+    """构建交易调用图，利用已存储的trace数据"""
     import traceback
     import json
     from database import get_db
-    from database.models import UserInteraction, Contract
-    from web3 import Web3
+    from database.models import UserInteraction
+    from sqlalchemy import and_
+    
+    print(f"开始构建交易调用图，目标合约：{target_contract}，区块范围：{start_block}-{end_block}")
+    
+    # 使用单一数据库会话，而不是为每个操作创建新会话
+    db = next(get_db())
+    call_graph = {}
+    processed_txs = set()
     
     try:
-        print(f"开始构建交易调用图，目标合约：{target_contract}，区块范围：{start_block}-{end_block}")
-        
-        db = next(get_db())
-        call_graph = {}
-        processed_txs = set()
-        related_contracts = set()
-        
-        try:
-            # 查询所有相关交易
-            interactions = db.query(UserInteraction).filter(
+        # 查询所有相关交易
+        interactions = db.query(UserInteraction).filter(
+            and_(
                 UserInteraction.target_contract == target_contract.lower(),
                 UserInteraction.block_number >= start_block,
-                UserInteraction.block_number <= end_block
-            ).all()
+                UserInteraction.block_number <= end_block,
+                UserInteraction.trace_data.isnot(None)  # 确保有trace数据
+            )
+        ).all()
+        
+        print(f"找到 {len(interactions)} 笔与合约 {target_contract} 相关的交易")
+        
+        # 收集所有交易中已提取的地址
+        all_related_addresses = set()
+        
+        for interaction in interactions:
+            tx_hash = interaction.tx_hash
             
-            print(f"找到 {len(interactions)} 笔与合约 {target_contract} 相关的交易")
+            # 跳过已处理的交易
+            if tx_hash in processed_txs:
+                continue
             
-            for interaction in interactions:
-                tx_hash = interaction.tx_hash
-                
-                # 跳过已处理的交易
-                if tx_hash in processed_txs:
-                    continue
-                
-                processed_txs.add(tx_hash)
-                print(f"处理交易：{tx_hash}")
-                
-                # 初始化这个交易的调用图
-                call_graph[tx_hash] = {
-                    'call_hierarchy': {},
-                    'related_contracts': set()
-                }
-                
-                # 获取交易trace
-                trace_data = interaction.trace_data
-                if trace_data:
-                    try:
-                        trace_json = json.loads(trace_data)
-                        print(f"成功加载trace数据：{type(trace_json)}")
-                        
-                        # 构建初始调用节点
-                        root_node = {
-                            'from': interaction.caller_contract,
-                            'to': interaction.target_contract,
-                            'method': interaction.method_name,
-                            'method_id': interaction.input_data[:10] if interaction.input_data else "0x",
-                            'input': interaction.input_data,
-                            'children': []
-                        }
-                        
-                        call_graph[tx_hash]['call_hierarchy'] = root_node
-                        call_path = [interaction.target_contract]
-                        
-                        # 处理trace
-                        process_trace_recursively(
-                            trace_json, 
-                            root_node, 
-                            call_graph[tx_hash]['related_contracts'],
-                            call_path,
-                            0,
-                            max_depth,
-                            pruning_enabled
-                        )
-                        
-                        # 添加到总体的相关合约中
-                        related_contracts.update(call_graph[tx_hash]['related_contracts'])
-                        
-                    except Exception as e:
-                        print(f"处理交易trace时出错：{str(e)}")
-                        traceback.print_exc()
-                else:
-                    print(f"交易 {tx_hash} 没有trace数据")
+            processed_txs.add(tx_hash)
+            print(f"处理交易：{tx_hash}")
             
-            # 递归处理相关合约的交互
-            if related_contracts:
-                print(f"发现 {len(related_contracts)} 个相关合约，开始递归处理它们的交互")
-                process_related_contracts(
-                    call_graph, 
-                    processed_txs, 
-                    related_contracts,
-                    target_contract,
-                    start_block,
-                    end_block,
-                    1,
-                    max_depth,
-                    pruning_enabled
-                )
+            # 初始化这个交易的调用图
+            call_graph[tx_hash] = {
+                'call_hierarchy': {},
+                'related_contracts': set()
+            }
             
-            print(f"交易调用图构建完成，共包含 {len(call_graph)} 笔交易")
-            return call_graph
-            
-        except Exception as e:
-            print(f"查询交易时出错：{str(e)}")
-            traceback.print_exc()
-            return {}
+            # 获取交易trace
+            if interaction.trace_data:
+                try:
+                    trace_json = json.loads(interaction.trace_data)
+                    print(f"成功加载trace数据：{type(trace_json)}")
+                    
+                    # 构建初始调用节点
+                    root_node = {
+                        'from': interaction.caller_contract,
+                        'to': interaction.target_contract,
+                        'method': interaction.method_name,
+                        'method_id': interaction.input_data[:10] if interaction.input_data else "0x",
+                        'input': interaction.input_data,
+                        'children': []
+                    }
+                    
+                    call_graph[tx_hash]['call_hierarchy'] = root_node
+                    
+                    # 从数据库中获取已提取的地址，而不是重新处理trace
+                    # 假设我们已经在main.py中提取了地址并保存在某处
+                    # 这里我们可以查询其他表或者解析日志来获取
+                    
+                    # 处理trace以构建调用层次结构，但不用于提取地址
+                    # 这样可以避免频繁查询数据库来检查DEX池子
+                    call_path = [interaction.target_contract]
+                    process_trace_without_db_checks(
+                        trace_json, 
+                        root_node, 
+                        call_graph[tx_hash]['related_contracts'],
+                        call_path,
+                        0,
+                        max_depth,
+                        pruning_enabled=False  # 禁用需要数据库查询的剪枝
+                    )
+                    
+                    # 更新全局相关地址集合
+                    all_related_addresses.update(call_graph[tx_hash]['related_contracts'])
+                    
+                except Exception as e:
+                    print(f"处理交易trace时出错：{str(e)}")
+                    traceback.print_exc()
+            else:
+                print(f"交易 {tx_hash} 没有trace数据")
+        
+        print(f"交易调用图构建完成，共包含 {len(call_graph)} 笔交易，涉及 {len(all_related_addresses)} 个相关合约")
+        return call_graph
         
     except Exception as e:
         print(f"构建交易调用图时出错：{str(e)}")
         traceback.print_exc()
         return {}
+
+def process_trace_without_db_checks(trace, parent_node, related_contracts, call_path, current_depth, max_depth, pruning_enabled=False):
+    """处理trace数据以构建调用层次结构，避免数据库查询"""
+    if current_depth >= max_depth:
+        return
+    
+    try:
+        # 处理单个trace格式
+        if isinstance(trace, dict):
+            # 新的trace结构 (trace_transaction 格式)
+            if 'action' in trace:
+                process_trace_action_without_db(trace, parent_node, related_contracts, call_path, current_depth, max_depth)
+            # 旧格式
+            elif 'from' in trace and 'to' in trace:
+                process_trace_old_format_without_db(trace, parent_node, related_contracts, call_path, current_depth, max_depth)
+        
+        # 处理trace列表
+        elif isinstance(trace, list):
+            for subtrace in trace:
+                process_trace_without_db_checks(subtrace, parent_node, related_contracts, call_path, current_depth, max_depth)
+    
+    except Exception as e:
+        print(f"递归处理trace时出错：{str(e)}")
+        import traceback
+        traceback.print_exc()
+
+def process_trace_action_without_db(call, parent_node, related_contracts, call_path, current_depth, max_depth):
+    """处理action格式的trace，避免数据库查询"""
+    from web3 import Web3
+    
+    try:
+        action = call['action']
+        from_address = action.get('from', '').lower() if action.get('from') else ''
+        to_address = action.get('to', '').lower() if action.get('to') else ''
+        input_data = action.get('input', '0x')
+        call_type = action.get('callType', 'call')
+        value = action.get('value', '0x0')
+        
+        # 检查地址是否有效
+        has_from = bool(from_address and Web3.is_address(from_address))
+        has_to = bool(to_address and Web3.is_address(to_address))
+        
+        print(f"处理trace: from={from_address}({has_from}), to={to_address}({has_to}), type={call_type}")
+        
+        if has_from or has_to:
+            # 将有效地址添加到相关合约集合
+            if has_from:
+                related_contracts.add(from_address)
+            if has_to:
+                related_contracts.add(to_address)
+            
+            # 尝试提取方法ID
+            method_id = "0x"
+            if input_data and len(input_data) >= 10:
+                method_id = input_data[:10]
+            
+            # 创建调用节点
+            call_node = {
+                'from': from_address if has_from else "unknown",
+                'to': to_address if has_to else "unknown",
+                'method_id': method_id,
+                'call_type': call_type,
+                'value': value,
+                'children': []
+            }
+            
+            # 添加到父节点
+            parent_node['children'].append(call_node)
+            
+            # 构建新调用路径
+            new_call_path = call_path
+            if has_to:
+                new_call_path = call_path + [to_address]
+            
+            # 递归处理子trace
+            if 'subtraces' in call and call['subtraces'] > 0:
+                if 'calls' in call and isinstance(call['calls'], list):
+                    for subcall in call['calls']:
+                        process_trace_without_db_checks(
+                            subcall, 
+                            call_node,
+                            related_contracts, 
+                            new_call_path,
+                            current_depth + 1, 
+                            max_depth
+                        )
+    except Exception as e:
+        print(f"处理trace action时出错: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+def process_trace_old_format_without_db(trace, parent_node, related_contracts, call_path, current_depth, max_depth):
+    """处理旧格式的trace，避免数据库查询"""
+    from web3 import Web3
+    
+    try:
+        from_address = trace.get('from', '').lower() if trace.get('from') else ''
+        to_address = trace.get('to', '').lower() if trace.get('to') else ''
+        
+        # 检查地址是否有效
+        has_from = bool(from_address and Web3.is_address(from_address))
+        has_to = bool(to_address and Web3.is_address(to_address))
+        
+        if has_from or has_to:
+            # 将有效地址添加到相关合约集合
+            if has_from:
+                related_contracts.add(from_address)
+            if has_to:
+                related_contracts.add(to_address)
+            
+            # 创建调用节点
+            call_node = {
+                'from': from_address if has_from else "unknown",
+                'to': to_address if has_to else "unknown",
+                'method_id': trace.get('method_id', '0x'),
+                'call_type': trace.get('type', 'call'),
+                'value': trace.get('value', '0x0'),
+                'children': []
+            }
+            
+            # 添加到父节点
+            parent_node['children'].append(call_node)
+            
+            # 构建新调用路径
+            new_call_path = call_path
+            if has_to:
+                new_call_path = call_path + [to_address]
+            
+            # 递归处理子trace
+            if 'children' in trace and isinstance(trace['children'], list):
+                for child in trace['children']:
+                    process_trace_without_db_checks(
+                        child,
+                        call_node,
+                        related_contracts,
+                        new_call_path,
+                        current_depth + 1,
+                        max_depth
+                    )
+    except Exception as e:
+        print(f"处理旧格式trace时出错: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--query":
