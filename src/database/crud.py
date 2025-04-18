@@ -171,3 +171,11 @@ def get_contract_source_code(db: Session, address: str):
         .first()
     )
     return contract.source_code if contract else None
+
+def update_contract_type(db: Session, address: str, contract_type: str):
+    """更新合约类型"""
+    contract = db.query(Contract).filter(Contract.target_contract == address.lower()).first()
+    if contract:
+        contract.type = contract_type
+        db.commit()
+    return contract

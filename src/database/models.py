@@ -16,6 +16,7 @@ class Contract(Base):
     is_proxy = Column(Boolean, default=False)        # 新增字段
     parent_address = Column(String(42), index=True) 
     network = Column(String(20), default='ethereum')  # 新增：记录网络信息
+    type = Column(String(50))  # 新增：记录合约类型
     created_at = Column(TIMESTAMP)  # 添加创建时间字段
 
 class UserInteraction(Base):

@@ -404,7 +404,7 @@ def generate_code_context(contracts_chain):
                 else:
                     source_code_str = str(source_code)
                     code_sections.append(
-                        f"// 验证源码（{contract['type']}合约 {contract['address']}）\n"
+                f"// 验证源码（{contract['type']}合约 {contract['address']}）\n"
                                     f"{source_code_str}"
                     )
             except Exception as e:
@@ -431,7 +431,7 @@ def generate_code_context(contracts_chain):
                     decompiled_code_str = str(decompiled_code)
                     
                     code_sections.append(
-                        f"// 反编译代码（{contract['type']}合约 {contract['address']}）\n"
+                    f"// 反编译代码（{contract['type']}合约 {contract['address']}）\n"
                                     f"{decompiled_code_str}"
                     )
             except Exception as e:
@@ -439,7 +439,7 @@ def generate_code_context(contracts_chain):
                 code_sections.append(
                     f"// 反编译代码（{contract['type']}合约 {contract['address']}）\n"
                     f"// 处理反编译代码时出错: {str(e)}"
-            )
+                )
         
         # ABI信息
         abi = contract.get("abi", [])
@@ -506,9 +506,9 @@ def analyze_input_data(input_data, abi):
                     
                             return {
                                 'method': decoded[0].fn_name,
-                                                        'params': dict(decoded[1]),
-                                                        'extracted_addresses': extracted_addresses
-                            }       
+                                'params': dict(decoded[1]),
+                                'extracted_addresses': extracted_addresses
+                            }
                 except ValueError as e:
                     if "Could not find any function with matching selector" in str(e):
                         # 这是正常的，意味着ABI中没有匹配的函数
@@ -529,21 +529,21 @@ def analyze_input_data(input_data, abi):
         
         # 每32字节（64个字符）为一个参数
         for i in range(0, len(data), 64):
-                    if i + 64 > len(data):
-                        # 处理不完整的参数
-                        param = data[i:]
-                        params.append(f"Incomplete: {param}")
-                        continue
+            if i + 64 > len(data):
+                # 处理不完整的参数
+                param = data[i:]
+                params.append(f"Incomplete: {param}")
+                continue
                 
         param = data[i:i+64]
         # 检查是否是地址
         if param.startswith('000000000000000000000000'):
-                potential_address = '0x' + param[-40:]
-                if Web3.is_address(potential_address):
-                    extracted_addresses.append(potential_address)
-                    params.append(f"Address: {potential_address}")
-                else:
-                    params.append(f"Potential Address (invalid): 0x{param[-40:]}")
+            potential_address = '0x' + param[-40:]
+            if Web3.is_address(potential_address):
+                extracted_addresses.append(potential_address)
+                params.append(f"Address: {potential_address}")
+            else:
+                params.append(f"Potential Address (invalid): 0x{param[-40:]}")
         else:
             # 尝试转换为整数
             try:
@@ -551,7 +551,6 @@ def analyze_input_data(input_data, abi):
                 params.append(f"Value: {value}")
             except:
                 params.append(f"Raw: {param}")
-    
                 return {
                         'method_id': f"0x{method_id}",
                         'params': params,
@@ -564,7 +563,7 @@ def analyze_input_data(input_data, abi):
             'method_id': 'error',
             'params': [f'解析失败: {str(e)}'],
             'extracted_addresses': []
-        }
+    }
 
 def process_user_query(params):
     """处理用户查询，生成分析报告"""
@@ -1457,92 +1456,34 @@ def get_internal_transactions_from_etherscan(tx_hash, network="ethereum"):
     return None
 
 def is_dex_pool_contract(contract_address, contract_code=None, contract_abi=None):
-    """检查合约是否为DEX池子合约"""
-    import json
-    from web3 import Web3
+    """检查合约是否为DEX池子或代币合约"""
+    db = next(get_db())
     
     try:
-        # 定义DEX池子的特征模式
-        function_patterns = [
-            'swap',
-            'addLiquidity',
-            'removeLiquidity',
-            'mint',
-            'burn',
-            'sync'
-        ]
+        # 如果没有提供代码或ABI，尝试从数据库获取
+        if not contract_code or not contract_abi:
+            contract_info = get_contract_full_info(db, contract_address)
+            if contract_info:
+                contract_code = {
+                    'source_code': contract_info.get('source_code'),
+                    'decompiled_code': contract_info.get('decompiled_code')
+                }
+                contract_abi = contract_info.get('abi')
         
-        # 定义变量名模式
-        variable_patterns = [
-            'token0',
-            'token1',
-            'reserve0',
-            'reserve1',
-            'pool',
-            'pair',
-            'liquidity'
-        ]
-        
-        # 定义DEX工厂合约地址
-        dex_factory_addresses = [
-            '0x5c69bee701ef814a2b6a3edd4b1652cb9cc5aa6f',  # Uniswap V2
-            '0x1f98431c8ad98523631ae4a59f267346ea31f984',  # Uniswap V3
-            '0xc0aee478e3658e2610c5f7a4a2e1777ce9e4f2ac',  # Sushiswap
-            '0xba12222222228d8ba445958a75a0704d566bf2c8',  # Balancer V2
-            '0x0841bd0b734e4f5853f0dd8d7ea041c241fb0da6',  # Curve
-        ]
-        
-        # 1. 检查合约地址是否是已知DEX池子地址
-        if contract_address.lower() in dex_factory_addresses:
+        # 简化判断逻辑：如果有源代码或ABI，即为DEX池子或代币合约
+        if (contract_code and contract_code.get('source_code')) or contract_abi:
+            # 更新合约类型为dex_pool_or_token
+            update_contract_type(db, contract_address, "dex_pool_or_token")
             return True
-        
-        # 2. 检查ABI中的函数名
-        if contract_abi:
-            if isinstance(contract_abi, str):
-                try:
-                    abi_json = json.loads(contract_abi)
-                except Exception:
-                    abi_json = []
-            else:
-                abi_json = contract_abi
-                
-            for item in abi_json:
-                if isinstance(item, dict) and item.get('type') == 'function':
-                    func_name = item.get('name', '').lower()
-                    if any(pattern in func_name for pattern in function_patterns):
-                        return True
-        
-        # 3. 检查源代码中的特征
-        if contract_code:
-            contract_code_lower = contract_code.lower()
-            # 检查函数名
-            for pattern in function_patterns:
-                if pattern in contract_code_lower:
-                    return True
+        else:
+            # 如果有反编译代码但没有源代码和ABI，标记为potential_hacker
+            if contract_code and contract_code.get('decompiled_code'):
+                update_contract_type(db, contract_address, "potential_hacker")
+            return False
             
-            # 检查变量名
-            for pattern in variable_patterns:
-                if pattern in contract_code_lower:
-                    return True
-                    
-        # 4. 如果没有代码或ABI，尝试获取代码并检查
-        if not contract_code and not contract_abi:
-            from database import get_db
-            from database.models import Contract
-            
-            db = next(get_db())
-            contract = db.query(Contract).filter(Contract.target_contract == contract_address.lower()).first()
-            
-            if contract:
-                if contract.source_code:
-                    # 检查源代码
-                    return is_dex_pool_contract(contract_address, contract.source_code, contract.abi)
-            
-        return False
-        
     except Exception as e:
-        print(f"检查合约 {contract_address} 是否为DEX池子时出错: {str(e)}")
-        return False  # 出错时返回False而不是中断
+        print(f"检查DEX池子合约时出错: {str(e)}")
+        return False
 
 def process_trace_recursively(trace, parent_node, related_contracts, call_path, current_depth, max_depth, pruning_enabled=True):
     """递归处理trace数据，支持多种trace格式"""
