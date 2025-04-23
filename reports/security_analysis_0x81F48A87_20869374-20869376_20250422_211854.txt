@@ -1,0 +1,97 @@
+安全分析报告
+生成时间: 2025-04-22 21:18:54
+目标合约: 0x81F48A87Ec44208c691f870b9d400D9c13111e2E
+区块范围: 20869374 - 20869376
+分析类型: security_analysis
+原始查询: Analyze the security event of address 0x81F48A87Ec44208c691f870b9d400D9c13111e2E in block 20869374 to 20869376
+
+================================================================================
+
+# Security Incident Analysis Report
+
+## Vulnerability Summary
+
+The vulnerability lies within the `FireToken` contract's `_transfer` function, specifically in how it handles sell operations and the subsequent transfer of tokens to the dead address. This logic, intended to create a hyper-deflationary token, introduces a denial-of-service (DoS) vulnerability that can render the token untradeable. The core issue is that the `sync` function of the Uniswap V2 Pair isn't always called immediately after modifying the `balanceOf` mapping, which can lead to inconsistencies in the pool's reserves and ultimately revert legitimate swap transactions.
+
+## Contract Analysis
+
+- **Target Contract:** `FireToken` (Source code provided)
+- **Vulnerable Function:** `_transfer`
+
+The relevant code segment is:
+
+```solidity
+function _transfer(address from, address to, uint256 amount) private {
+    require(from != address(0), "ERC20: transfer from the zero address");
+    require(to != address(0), "ERC20: transfer to the zero address");
+    require(amount > 0, "Transfer amount must be greater than zero");
+    uint256 taxAmount = 0;
+
+    if (from != owner() && to != owner()) {
+        require(!bots[from] && !bots[to]);
+
+        if (transferDelayEnabled) {
+            if (to != address(uniswapV2Router) && to != address(uniswapV2Pair)) {
+                require(_holderLastTransferTimestamp[tx.origin] < block.number, "Only one transfer per block allowed.");
+                _holderLastTransferTimestamp[tx.origin] = block.number;
+            }
+        }
+
+        if (from == uniswapV2Pair && to != address(uniswapV2Router) && !_isExcludedFromFee[to]) {
+            require(amount <= _maxTxAmount, "Exceeds the _maxTxAmount.");
+            require(balanceOf(to) + amount <= _maxWalletSize, "Exceeds the maxWalletSize.");
+            if (_buyCount < _preventSwapBefore) {
+                require(!isContract(to));
+            }
+            _buyCount++;
+        }
+
+        
+        taxAmount = amount.mul((_buyCount > _reduceBuyTaxAt) ? _finalBuyTax : _initialBuyTax).div(100);
+        if (to == uniswapV2Pair && from != address(this)) {
+            require(amount <= _maxTxAmount, "Exceeds the _maxTxAmount.");
+            taxAmount = amount.mul((_buyCount > _reduceSellTaxAt) ? _finalSellTax : _initialSellTax).div(100);\
+            
+            // Deduct tokens from the liquidity pair and transfer to the dead address
+            uint256 sellAmount = amount.sub(taxAmount);\
+            if (sellAmount > 0) {\
+                uint256 liquidityPairBalance = balanceOf(uniswapV2Pair);\
+                if (liquidityPairBalance >= sellAmount) {\
+                    _balances[uniswapV2Pair] = _balances[uniswapV2Pair].sub(sellAmount);\
+                    _balances[DEAD_ADDRESS] = _balances[DEAD_ADDRESS].add(sellAmount);\
+                    emit Transfer(uniswapV2Pair, DEAD_ADDRESS, sellAmount);\
+                    \
+                    // Call sync to update the pair\
+                    IUniswapV2Pair(uniswapV2Pair).sync();\
+                }\n            }\n        }\n\n        uint256 contractTokenBalance = balanceOf(address(this));\n        if (!inSwap && to == uniswapV2Pair && swapEnabled && contractTokenBalance > _taxSwapThreshold && _buyCount > _preventSwapBefore) {\n            swapTokensForEth(min(amount, min(contractTokenBalance, _maxTaxSwap)));\n            uint256 contractETHBalance = address(this).balance;\n            if (contractETHBalance > 0) {\n                sendETHToFee(address(this).balance);\n            }\n        }\n    }\n\n    if (taxAmount > 0) {\n        _balances[address(this)] = _balances[address(this)].add(taxAmount);\n        emit Transfer(from, address(this), taxAmount);\n    }\n    _balances[from] = _balances[from].sub(amount);\n    _balances[to] = _balances[to].add(amount.sub(taxAmount));\n    emit Transfer(from, to, amount.sub(taxAmount));\n}
+```
+
+## Attack Chain Reconstruction
+
+1.  **Initial State:** The `FireToken` is deployed, and liquidity is added to the `uniswapV2Pair`. The `balanceOf` mapping for the `uniswapV2Pair` address reflects the liquidity tokens held by the pair.
+2.  **Sell Trigger:** A user initiates a sell transaction, transferring `amount` of `FireToken` to the `uniswapV2Pair`.
+3.  **Tax Calculation and Dead Address Transfer:** The `_transfer` function calculates the `taxAmount` based on the current sell tax. It then calculates the `sellAmount` which is the amount to be transferred to the `DEAD_ADDRESS` to reduce supply.
+4.  **Balance Update and `sync` Call:** The `_balances` mapping is updated to reflect the transfer of `sellAmount` from the `uniswapV2Pair` to the `DEAD_ADDRESS`. **Critically, the `IUniswapV2Pair(uniswapV2Pair).sync()` function is only called *after* modifying the `_balances` mapping, but *before* the tokens are actually removed from the contract.**
+5.  **Potential State Inconsistency:** Since the `sync` call relies on the `balanceOf` the tokens in the contract to update the reserves. This will cause a mismatch between the reserves calculated by the `UniswapV2Pair` contract and the actual token balances within the `FireToken` contract:
+
+6.  **Subsequent Swap Failure:** When another user attempts to swap, the `UniswapV2Pair` contract\'s `swap` function calculates the output amount based on its (now incorrect) reserves. Because the `FireToken` contract’s `_balances` have been artificially altered, the numbers are now wrong, and it is possible that later swaps will fail because the arithmetic checks in the `UniswapV2Pair` contract will not be satisfied.
+
+## Exploitation Mechanism
+
+The vulnerability is exploited by creating a state inconsistency between the `FireToken` contract and the `UniswapV2Pair` contract. The `sync` function call is meant to update the pair\'s reserves based on the current token balances, but because tokens are effectively removed from the pair\'s balance sheet *before* the pair is `sync`ed, the pair\'s reserves calculation becomes inaccurate.
+
+This inaccurate state can lead to several issues:
+
+*   **DoS:** Legitimate swap transactions can revert due to the incorrect reserve calculation, effectively preventing users from trading the token. The `require(balance0Adjusted.mul(balance1Adjusted) >= uint(_reserve0).mul(_reserve1).mul(1000**2), \'UniswapV2: K\');` check within the `IUniswapV2Pair(UniswapV2Library.pairFor(factory, input, output)).swap` function will fail.
+*   **Price Manipulation:** The incorrect reserves can lead to inaccurate price calculations, potentially allowing attackers to manipulate the price of the token.
+
+## Root Cause
+
+The root cause is that the `FireToken` contract attempts to implement a complex economic mechanic (hyper-deflation) within the token contract itself, which interferes with the assumptions made by the `UniswapV2Pair` contract regarding reserve balances. The logic to update the reserves should be executed *after* the pair is `sync`ed to prevent the arithmetic checks failing.
+
+## Security Recommendations
+
+1.  **Remove the Hyper-Deflationary Mechanism:** The core issue stems from modifying the `_balances` mapping and sending tokens to the dead address before calling `sync`. Removing this logic will eliminate the vulnerability.
+2.  **Avoid Custom Logic in Transfer Function:** In general, complex or unusual logic within the `transfer` or `transferFrom` functions should be avoided, as it can interfere with the behavior of other DeFi protocols.\
+3.  **Consider Tokenomics:** If deflationary mechanics are desired, carefully consider how they interact with other DeFi protocols and ensure that they do not introduce vulnerabilities or unexpected behavior.
+4.  **Update Reserves Immediately**: If the deflationary mechanic is desired, then the pair should be synced *after* the tokens are removed from the user's balance.

@@ -530,123 +530,179 @@ class ContractAnalyzer:
             for block_num in tqdm(range(start_block, end_block + 1)):
                 try:
                     block = self.w3.eth.get_block(block_num, full_transactions=True)
-                                    
-                    for tx in block.transactions:
-                                    try:
-                                                    # 确保tx.to存在（不是合约创建交易）
-                                                    if tx.to is None:
-                                                        continue
                     
-                                                    # 确保tx.to是校验和格式
-                                                    tx_to_checksum = Web3.to_checksum_address(tx.to) if tx.to else None
-                                                    tx_from_checksum = Web3.to_checksum_address(tx['from']) if tx['from'] else None
-                                                    
-                                                    # 检查交易是否与目标合约相关
-                                                    if tx_to_checksum and tx_to_checksum.lower() == target_address.lower():
-                                                        # 处理调用目标合约的交易
-                                                        tx_input = tx.input
-                                                        if isinstance(tx_input, str):
-                                                            # 如果是字符串，确保格式正确
-                                                            if tx_input.startswith('0x'):
-                                                                tx_input = tx_input[2:]
-                                                        elif isinstance(tx_input, bytes):
-                                                            # 如果是字节，转换为十六进制字符串
-                                                            tx_input = tx_input.hex()
-                                                            if tx_input.startswith('0x'):
-                                                                tx_input = tx_input[2:]
-                                                        
-                                                        # 先获取交易追踪（trace）以获取内部交易和完整调用链
-                                                        trace_data = self.get_transaction_trace(tx.hash)
-                                                        
-                                                        # 先创建tx_data字典，确保包含所有必要的字段
-                                                        tx_data = {
-                                                            'target_contract': target_address.lower(),
-                                                            'caller_contract': tx_from_checksum.lower(),
-                                                            'method_name': self.get_method_name(target_address, tx_input),
-                                                            'block_number': block_num,  # 确保这个字段总是存在
-                                                            'tx_hash': tx.hash.hex() if isinstance(tx.hash, bytes) else tx.hash,
-                                                            'timestamp': datetime.fromtimestamp(block.timestamp),
-                                                            'input_data': tx_input,
-                                                            'network': self.current_network
-                                                        }
-                                                        
-                                                        # 先保存基本交互数据到数据库
-                                                        self.save_interaction(tx_data)
-                                                        count += 1
-                                                        
-                                                        # 集合用于存储所有提取的地址
-                                                        all_extracted_addresses = set()
-                                                        
-                                                        # 从input_data中提取地址
-                                                        input_addresses = self._extract_addresses_from_input(tx_input)
-                                                        all_extracted_addresses.update(input_addresses)
-                                                        
-                                                        # 从trace中提取所有相关合约地址
-                                                        trace_addresses = set()
-                                                        if trace_data:
-                                                            trace_addresses = self.extract_addresses_from_trace(trace_data)
-                                                            all_extracted_addresses.update(trace_addresses)
-                                                            
-                                                            # 保存trace数据到交易记录
-                                                            tx_data['trace_data'] = json.dumps(trace_data)
-                                                            self.update_interaction_trace(tx_data)
-                                                        
-                                                        # 输出合并后的地址信息
-                                                        print(f"从交易 {tx.hash.hex() if isinstance(tx.hash, bytes) else tx.hash} 中提取了 {len(all_extracted_addresses)} 个地址")
-                                                        print(f"其中input_data提供 {len(input_addresses)} 个，trace补充了 {len(trace_addresses) if trace_data else 0} 个")
-                                                        
-                                                        # 加入到总的相关地址集合
-                                                        related_addresses.update(all_extracted_addresses)
-                                                        
-                                                        # 处理交易收据中的事件日志
-                                                        try:
-                                                            receipt = self.w3.eth.get_transaction_receipt(tx.hash)
-                                                            if receipt and hasattr(receipt, 'logs') and receipt.logs:
-                                                                # 将日志转换为可序列化格式
-                                                                serialized_logs = []
-                                                                for log in receipt.logs:
-                                                                    log_dict = {}
-                                                                    # 处理地址
-                                                                    if hasattr(log, 'address'):
-                                                                        log_dict['address'] = Web3.to_checksum_address(log.address).lower()
-                                                                        # 添加日志中的合约地址到相关地址集合
-                                                                        related_addresses.add(log_dict['address'].lower())
-                                                                    
-                                                                    # 处理topics
-                                                                    log_dict['topics'] = []
-                                                                    if hasattr(log, 'topics'):
-                                                                        for topic in log.topics:
-                                                                            if isinstance(topic, bytes):
-                                                                                log_dict['topics'].append('0x' + topic.hex())
-                                                                            else:
-                                                                                log_dict['topics'].append(topic)
-                                                                    
-                                                                    # 处理data
-                                                                    if hasattr(log, 'data'):
-                                                                        if isinstance(log.data, bytes):
-                                                                            log_dict['data'] = '0x' + log.data.hex()
-                                                                        else:
-                                                                            log_dict['data'] = log.data
-                                                                    
-                                                                    # 其他字段
-                                                                    if hasattr(log, 'blockNumber'):
-                                                                        log_dict['blockNumber'] = log.blockNumber
-                                                                    if hasattr(log, 'transactionHash'):
-                                                                        log_dict['transactionHash'] = log.transactionHash.hex() if isinstance(log.transactionHash, bytes) else log.transactionHash
-                                                                    
-                                                                    serialized_logs.append(log_dict)
-                                                                
-                                                                # 更新交易数据中的事件日志
-                                                                tx_data['event_logs'] = json.dumps(serialized_logs)
-                                                                self.update_interaction_logs(tx_data)
-                                                        except Exception as e:
-                                                            print(f"处理事件日志时出错: {str(e)}")
+                    for tx in block.transactions:
+                        try:
+                            # 检查交易是否与目标合约相关（作为接收方、发送方或创建者）
+                            target_address_lower = target_address.lower()
+                            is_target_recipient = tx.to and Web3.to_checksum_address(tx.to).lower() == target_address_lower
+                            is_target_sender = tx['from'] and Web3.to_checksum_address(tx['from']).lower() == target_address_lower
                             
+                            # 检查是否是目标合约创建的合约创建交易
+                            is_contract_creation = tx.to is None and is_target_sender
+                            
+                            if is_target_recipient or is_target_sender or is_contract_creation:
+                                # 处理tx_input
+                                tx_input = tx.input
+                                if isinstance(tx_input, str):
+                                    # 如果是字符串，确保格式正确
+                                    if tx_input.startswith('0x'):
+                                        tx_input = tx_input[2:]
+                                elif isinstance(tx_input, bytes):
+                                    # 如果是字节，转换为十六进制字符串
+                                    tx_input = tx_input.hex()
+                                    if tx_input.startswith('0x'):
+                                        tx_input = tx_input[2:]
+                                
+                                # 获取交易追踪
+                                trace_data = self.get_transaction_trace(tx.hash)
+                                
+                                # 创建tx_data字典
+                                if is_contract_creation:
+                                    # 处理合约创建交易
+                                    print(f"发现合约创建交易 {tx.hash.hex() if isinstance(tx.hash, bytes) else tx.hash}")
+                                    created_address = None
+                                    
+                                    # 尝试从receipt中获取创建的合约地址
+                                    try:
+                                        receipt = self.w3.eth.get_transaction_receipt(tx.hash)
+                                        if receipt and receipt.get('contractAddress'):
+                                            created_address = receipt['contractAddress'].lower()
+                                            print(f"创建的合约地址: {created_address}")
                                     except Exception as e:
-                                        print(f"处理交易详情时出错: {str(e)}")
-                                        traceback.print_exc()
-                                        continue
+                                        print(f"获取交易收据失败: {str(e)}")
+                                    
+                                    # 也可从trace尝试获取创建的合约地址
+                                    if trace_data and isinstance(trace_data, dict) and trace_data.get('type') == 'create':
+                                        if trace_data.get('result', {}).get('address'):
+                                            created_address = trace_data['result']['address'].lower()
+                                            print(f"从trace中获取创建的合约地址: {created_address}")
+                                    
+                                    tx_data = {
+                                        'target_contract': created_address if created_address else "unknown_created",
+                                        'caller_contract': target_address_lower,
+                                        'method_name': 'create',  # 标记为创建操作
+                                        'direction': 'outgoing',
+                                    }
+                                elif is_target_recipient:
+                                    # 现有的接收方逻辑
+                                    tx_data = {
+                                        'target_contract': target_address_lower,
+                                        'caller_contract': tx['from'].lower(),
+                                        'method_name': self.get_method_name(target_address, tx_input),
+                                        'direction': 'incoming',
+                                    }
+                                else:
+                                    # 现有的发送方逻辑
+                                    tx_data = {
+                                        'target_contract': tx.to.lower() if tx.to else "unknown_recipient",
+                                        'caller_contract': target_address_lower,
+                                        'method_name': self.get_method_name(tx.to, tx_input) if tx.to else "contract_creation",
+                                        'direction': 'outgoing',
+                                    }
+                                
+                                # 添加通用字段
+                                tx_data.update({
+                                    'block_number': block_num,
+                                    'tx_hash': tx.hash.hex() if isinstance(tx.hash, bytes) else tx.hash,
+                                    'timestamp': datetime.fromtimestamp(block.timestamp),
+                                    'input_data': tx_input,
+                                    'network': self.current_network
+                                })
+                                
+                                # 在处理交易时增加合约创建事件检测
+                                if trace_data:
+                                    # 检查是否是合约创建交易
+                                    is_create_tx = False
+                                    if isinstance(trace_data, dict) and trace_data.get('type') == 'create':
+                                        is_create_tx = True
+                                    elif isinstance(trace_data, list):
+                                        for item in trace_data:
+                                            if isinstance(item, dict) and item.get('type') == 'create':
+                                                is_create_tx = True
+                                                break
+                                    
+                                    # 如果是创建交易，修改method_name
+                                    if is_create_tx:
+                                        tx_data['method_name'] = 'create'
+                                
+                                # 保存交互数据到数据库
+                                self.save_interaction(tx_data)
+                                count += 1
+                                
+                                # 集合用于存储所有提取的地址
+                                all_extracted_addresses = set()
+                                
+                                # 从input_data中提取地址
+                                input_addresses = self._extract_addresses_from_input(tx_input)
+                                all_extracted_addresses.update(input_addresses)
+                                
+                                # 从trace中提取所有相关合约地址
+                                trace_addresses = set()
+                                if trace_data:
+                                    trace_addresses = self.extract_addresses_from_trace(trace_data)
+                                    all_extracted_addresses.update(trace_addresses)
+                                    
+                                    # 保存trace数据到交易记录
+                                    tx_data['trace_data'] = json.dumps(trace_data)
+                                    self.update_interaction_trace(tx_data)
+                                
+                                # 输出合并后的地址信息
+                                print(f"从交易 {tx.hash.hex() if isinstance(tx.hash, bytes) else tx.hash} 中提取了 {len(all_extracted_addresses)} 个地址")
+                                print(f"其中input_data提供 {len(input_addresses)} 个，trace补充了 {len(trace_addresses) if trace_data else 0} 个")
+                                
+                                # 加入到总的相关地址集合
+                                related_addresses.update(all_extracted_addresses)
+                                
+                                # 处理交易收据中的事件日志
+                                try:
+                                    receipt = self.w3.eth.get_transaction_receipt(tx.hash)
+                                    if receipt and hasattr(receipt, 'logs') and receipt.logs:
+                                        # 将日志转换为可序列化格式
+                                        serialized_logs = []
+                                        for log in receipt.logs:
+                                            log_dict = {}
+                                            # 处理地址
+                                            if hasattr(log, 'address'):
+                                                log_dict['address'] = Web3.to_checksum_address(log.address).lower()
+                                                # 添加日志中的合约地址到相关地址集合
+                                                related_addresses.add(log_dict['address'].lower())
+                                            
+                                            # 处理topics
+                                            log_dict['topics'] = []
+                                            if hasattr(log, 'topics'):
+                                                for topic in log.topics:
+                                                    if isinstance(topic, bytes):
+                                                        log_dict['topics'].append('0x' + topic.hex())
+                                                    else:
+                                                        log_dict['topics'].append(topic)
+                                            
+                                            # 处理data
+                                            if hasattr(log, 'data'):
+                                                if isinstance(log.data, bytes):
+                                                    log_dict['data'] = '0x' + log.data.hex()
+                                                else:
+                                                    log_dict['data'] = log.data
+                                            
+                                            # 其他字段
+                                            if hasattr(log, 'blockNumber'):
+                                                log_dict['blockNumber'] = log.blockNumber
+                                            if hasattr(log, 'transactionHash'):
+                                                log_dict['transactionHash'] = log.transactionHash.hex() if isinstance(log.transactionHash, bytes) else log.transactionHash
+                                            
+                                            serialized_logs.append(log_dict)
+                                            
+                                        # 更新交易数据中的事件日志
+                                        tx_data['event_logs'] = json.dumps(serialized_logs)
+                                        self.update_interaction_logs(tx_data)
+                                except Exception as e:
+                                    print(f"处理事件日志时出错: {str(e)}")
                         
+                        except Exception as e:
+                            print(f"处理交易详情时出错: {str(e)}")
+                            traceback.print_exc()
+                            continue
+                                
                 except Exception as e:
                     print(f"获取区块 {block_num} 时出错: {str(e)}")
                     continue
@@ -729,7 +785,7 @@ class ContractAnalyzer:
                     print(f"处理地址 {addr} 在调用链中的角色时出错: {str(e)}")
             
             return related_addresses
-            
+                                    
         except Exception as e:
             error_msg = f"合约分析过程中出错: {str(e)}"
             print(error_msg)
@@ -821,7 +877,7 @@ class ContractAnalyzer:
                                         trace_params["params"][0] = trace_params["params"][0][2:]
                                     else:
                                         trace_params["params"][0] = "0x" + trace_params["params"][0]
-                            continue
+                                continue
                     else:
                         print(f"RPC请求失败，状态码: {response.status_code}")
                         print(f"响应内容: {response.text}")
@@ -836,7 +892,7 @@ class ContractAnalyzer:
                     if attempt < max_retries - 1:
                         print(f"将在 {retry_delay} 秒后重试...")
                         time.sleep(retry_delay)
-                    
+                                
                 except Exception as e:
                     print(f"请求过程中出错: {str(e)}")
                     if attempt < max_retries - 1:
@@ -846,7 +902,7 @@ class ContractAnalyzer:
             # 所有重试都失败，尝试替代方法
             print("尝试使用替代方法获取交易信息...")
             return self._get_transaction_trace_alternative(tx_hash)
-                                    
+                            
         except Exception as e:
             print(f"获取交易追踪时出错: {str(e)}")
             traceback.print_exc()
@@ -937,9 +993,9 @@ class ContractAnalyzer:
                             print(f"从trace提取到to地址: {addr}")
                     except Exception as e:
                         print(f"处理to地址时出错: {str(e)}")
-            else:
+                else:
                 # 原始代码的处理逻辑（处理直接包含from/to的格式）
-                process_call(trace_data)
+                    process_call(trace_data)
         elif isinstance(trace_data, list):
             # 处理trace列表
             for item in trace_data:

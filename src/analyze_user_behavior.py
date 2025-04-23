@@ -12,6 +12,7 @@ import requests
 from sqlalchemy.pool import QueuePool
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy import and_, or_
 
 # 新增在analyze_user_behavior.py顶部
 USER_QUERY_PROMPT = """
@@ -58,45 +59,46 @@ Output format:
 """
 
 FINAL_REPORT_PROMPT = """
-Based on the following information, generate an in-depth security analysis report:
+Based on the provided contract code and transaction data, generate a definitive security analysis report:
 
-# Preliminary Event Analysis
+# Preliminary Contract Analysis
 {preliminary_analysis}
 
-# Detailed Contract Analysis  
+# Detailed Security Analysis  
 {behavior_analysis}
 
-Report requirements:
-1. Comprehensive analysis of the security status of the target contract and related contracts
-2. Identification of all participating contract addresses and their roles
-3. Analysis of call relationships and dependencies between contracts
-4. Complete reconstruction of possible attack chains
-5. Specific security improvement recommendations
+## CRITICAL ANALYSIS REQUIREMENTS
 
-Format requirements:
-## In-depth Security Analysis Report
+1. **CODE-BASED ANALYSIS ONLY** - Your analysis must be based strictly on the actual code provided and transaction data. DO NOT include speculative statements or hypothetical scenarios.
 
-### Event Overview
-[Include key information such as time, contracts involved, interaction patterns]
+2. **IDENTIFY EXACT VULNERABILITY FUNCTIONS** - You must identify the specific function(s) in the victim contract where the vulnerability exists. Quote the exact vulnerable code segments and explain precisely how they were exploited.
 
-### Contract Analysis
-1. Target Contract
-   [Detailed analysis]
+3. **CONCRETE ATTACK CHAIN** - Reconstruct the exact attack sequence based solely on transaction data and code evidence. Each step must reference specific function calls backed by transaction evidence.
 
-2. Related Contracts
-   [Analysis of each contract and their relationships]
+4. **DEFINITIVE LANGUAGE** - Use only definitive language throughout your analysis. Avoid terms like "could be", "might have", "possibly", etc. If you cannot determine something with certainty from the code or transaction data, state that it cannot be determined rather than speculating.
 
-### Interaction Analysis
-[Detailed analysis of call relationships and behavior patterns]
+## Output Format
 
-### Vulnerability Analysis
-[Identified security issues and potential risks]
+# Security Incident Analysis Report
 
-### Attack Chain Reconstruction
-[Possible attack paths and steps]
+## Vulnerability Summary
+[Precise description of the identified vulnerability with exact function name and code location]
 
-### Security Recommendations
-[Specific protection measures and improvement proposals]
+## Contract Analysis
+- Target Contract: [Analysis with specific function and line references]
+- Attacker Contract(s): [Analysis with specific function and line references]
+
+## Attack Chain Reconstruction
+[Step-by-step breakdown of the exact attack flow with specific transaction and function call references]
+
+## Exploitation Mechanism
+[Detailed technical explanation of exactly how the vulnerability was exploited, with code references]
+
+## Root Cause
+[Definitive statement on the exact code issue that enabled the attack]
+
+## Security Recommendations
+[Specific code fixes that would prevent this exact vulnerability]
 """
 
 def parse_user_query(user_input):
@@ -118,12 +120,14 @@ def generate_preliminary_analysis(params):
     return request_ds(prompt, "")
 
 def generate_final_report(preliminary, behavior):
-    """生成综合分析报告"""
+    """生成最终安全分析报告，整合初步分析和详细行为分析"""
     prompt = FINAL_REPORT_PROMPT.format(
         preliminary_analysis=preliminary,
         behavior_analysis=behavior
     )
-    return request_ds(prompt, "")
+    
+    final_report = request_ds(prompt, "")
+    return final_report
 
 
 
@@ -138,111 +142,28 @@ from database.crud import (
 from config.settings import settings
 
 BEHAVIOR_PROMPT = """
-As a blockchain security analysis expert, please conduct a comprehensive security analysis of the target contract and all related contracts within the specified block range, focusing on:
+作为区块链安全分析专家，请对以下合约进行全面分析：
 
-1. Interaction Behavior Analysis
-   - Identify suspicious call patterns and frequency anomalies
-   - Analyze parameters in input_data for abnormal values
-   - Track fund flow and value transfer paths
-   - Detect possible permission abuse
+目标合约: {target_contract}
+区块范围: {block_range}
+相关合约: {related_contracts}
 
-2. Event Log Analysis
-   - Analyze key events triggered by contracts
-   - Identify abnormal event sequences
-   - Track important parameters passed through events
-   - Correlate event chains across multiple contracts
-
-3. Related Contract Analysis
-   - Detailed analysis of all decompiled code, including:
-     * Storage layout and state variables
-     * Function signatures and call relationships
-     * Implementation logic of key operations
-   - Identify dependencies between contracts
-   - Check permission control mechanisms
-   - Evaluate security of interactions between contracts
-
-4. Attack Feature Identification
-   - Match known attack patterns based on decompiled code
-   - Detect abnormal call sequences
-   - Identify suspicious address behavior patterns
-   - Analyze possible attack vectors
-
-Analysis data:
-Target contract and related contract code:
-{code_context}
-
-Method call statistics:
+== 方法调用统计 ==
 {method_list}
 
-Event timeline analysis:
-{timeline_analysis}
+== 调用模式分析 ==
+{call_patterns}
 
-Key transaction analysis:
-{input_data_analysis}
+== 代码分析 ==
+{code_context}
 
-Event log analysis:
-{event_logs_analysis}
+请结合上述信息，提供详细的安全分析报告，包括:
+1. 合约功能和目的
+2. 潜在的安全问题和漏洞
+3. 交易行为模式分析
+4. 安全建议
 
-Please output the analysis report in the following format:
-
-### Interaction Behavior Analysis
-1. Timeline Analysis
-   [Detailed analysis of transaction timing and patterns]
-
-2. Suspicious Behavior Identification
-   [List all abnormal interaction patterns]
-
-3. Parameter Analysis
-   [Analyze abnormal parameters in input_data]
-
-4. Call Chain Analysis
-   [Analyze call relationships between contracts]
-
-### Event Log Analysis
-1. Key Event Analysis
-   [Analyze trigger patterns and parameters of important events]
-
-2. Event Sequence Tracking
-   [Analyze temporal relationships of related events]
-
-3. Cross-Contract Event Correlation
-   [Analyze event correlations across multiple contracts]
-
-### Contract Security Analysis
-1. Decompiled Code Analysis
-   [Detailed analysis of each contract's decompiled code, including:
-    - Storage layout and purpose of state variables
-    - Implementation logic of key functions
-    - Possible vulnerabilities]
-
-2. Related Contract Vulnerabilities
-   [Based on decompiled code, analyze security issues that related contracts may bring to the target contract]
-
-3. Permission Control Audit
-   [Evaluate permission management mechanisms based on decompiled code]
-
-4. Contract Dependency Risk
-   [Analyze risks that may arise from dependencies between contracts]
-
-### Attack Chain Analysis
-1. Attack Pattern Matching
-   [Based on decompiled code, analyze if there are known attack patterns]
-
-2. Attack Path Reconstruction
-   [Based on decompiled code, analyze possible attack paths]
-
-3. Vulnerability Exploitation Analysis
-   [Based on decompiled code, analyze how vulnerabilities could be exploited]
-
-### Security Recommendations
-1. Urgent Fix Recommendations
-   [Issues that need immediate attention]
-
-2. Long-term Hardening Plan
-   [Systematic security improvement recommendations]
-
-### Risk Level Assessment
-[Comprehensive assessment of security risk level, with reasons]
+如果目标合约没有源码，请重点分析它创建的合约和与之交互的合约代码。
 """
 
 from openai import OpenAI
@@ -404,7 +325,7 @@ def generate_code_context(contracts_chain):
                 else:
                     source_code_str = str(source_code)
                     code_sections.append(
-                f"// 验证源码（{contract['type']}合约 {contract['address']}）\n"
+                        f"// 验证源码（{contract['type']}合约 {contract['address']}）\n"
                                     f"{source_code_str}"
                     )
             except Exception as e:
@@ -431,7 +352,7 @@ def generate_code_context(contracts_chain):
                     decompiled_code_str = str(decompiled_code)
                     
                     code_sections.append(
-                    f"// 反编译代码（{contract['type']}合约 {contract['address']}）\n"
+                        f"// 反编译代码（{contract['type']}合约 {contract['address']}）\n"
                                     f"{decompiled_code_str}"
                     )
             except Exception as e:
@@ -446,8 +367,8 @@ def generate_code_context(contracts_chain):
         if abi and isinstance(abi, list):
             try:
                 code_sections.append(
-                f"// ABI定义（{contract['type']}合约 {contract['address']}）\n"
-                        f"{json.dumps(abi, indent=2)}"
+                    f"// ABI定义（{contract['type']}合约 {contract['address']}）\n"
+                    f"{json.dumps(abi, indent=2)}"
                 )
             except Exception as e:
                 print(f"处理ABI时出错: {str(e)}")
@@ -523,27 +444,27 @@ def analyze_input_data(input_data, abi):
         if isinstance(input_data, str) and input_data.startswith('0x'):
             input_data = input_data[2:]
     
-        method_id = input_data[:8]
-        params = []
-        data = input_data[8:]
-        
-        # 每32字节（64个字符）为一个参数
-        for i in range(0, len(data), 64):
-            if i + 64 > len(data):
-                # 处理不完整的参数
-                param = data[i:]
-                params.append(f"Incomplete: {param}")
-                continue
-                
+            method_id = input_data[:8]
+            params = []
+            data = input_data[8:]
+            
+            # 每32字节（64个字符）为一个参数
+            for i in range(0, len(data), 64):
+                if i + 64 > len(data):
+                    # 处理不完整的参数
+                    param = data[i:]
+                    params.append(f"Incomplete: {param}")
+                    continue
+                    
         param = data[i:i+64]
         # 检查是否是地址
         if param.startswith('000000000000000000000000'):
-            potential_address = '0x' + param[-40:]
-            if Web3.is_address(potential_address):
-                extracted_addresses.append(potential_address)
-                params.append(f"Address: {potential_address}")
-            else:
-                params.append(f"Potential Address (invalid): 0x{param[-40:]}")
+                potential_address = '0x' + param[-40:]
+                if Web3.is_address(potential_address):
+                    extracted_addresses.append(potential_address)
+                    params.append(f"Address: {potential_address}")
+                else:
+                    params.append(f"Potential Address (invalid): 0x{param[-40:]}")
         else:
             # 尝试转换为整数
             try:
@@ -563,7 +484,7 @@ def analyze_input_data(input_data, abi):
             'method_id': 'error',
             'params': [f'解析失败: {str(e)}'],
             'extracted_addresses': []
-    }
+        }
 
 def process_user_query(params):
     """处理用户查询，生成分析报告"""
@@ -679,19 +600,29 @@ def analyze_behavior_new(target_contract=None, start_block=None, end_block=None,
     w3 = Web3(Web3.HTTPProvider(settings.NETWORKS["ethereum"]["rpc_url"]))
     
     try:
-        # 查询交易数据
-        transactions_query = db.query(UserInteraction).filter(
-            UserInteraction.target_contract == target_contract.lower()
-        )
+        from sqlalchemy import and_, or_
+        
+        # 构建基本查询条件
+        query_conditions = [
+            or_(
+                UserInteraction.target_contract == target_contract.lower(),
+                UserInteraction.caller_contract == target_contract.lower()
+            )
+        ]
         
         # 添加区块范围过滤
         if start_block is not None:
-            transactions_query = transactions_query.filter(UserInteraction.block_number >= start_block)
+            query_conditions.append(UserInteraction.block_number >= start_block)
         if end_block is not None:
-            transactions_query = transactions_query.filter(UserInteraction.block_number <= end_block)
+            query_conditions.append(UserInteraction.block_number <= end_block)
             
-        # 获取所有交易
-        transactions = transactions_query.all()
+        # 添加trace数据条件
+        query_conditions.append(UserInteraction.trace_data.isnot(None))
+        
+        # 执行查询
+        transactions = db.query(UserInteraction).filter(
+            and_(*query_conditions)
+        ).all()
         
         # 检查是否有交易记录
         if not transactions:
@@ -852,20 +783,105 @@ def analyze_behavior_new(target_contract=None, start_block=None, end_block=None,
         sorted_methods = sorted(method_calls.items(), key=lambda x: x[1], reverse=True)
         method_list = "\n".join([f"{method}: {count} 次调用" for method, count in sorted_methods])
         
-        # 构建行为分析数据结构
+        # 识别目标合约创建的合约
+        created_contracts = identify_created_contracts(call_graph, target_contract)
+        has_created_contracts = bool(created_contracts)
+        
+        if has_created_contracts:
+            print(f"发现目标合约创建的合约: {len(created_contracts)} 个")
+            for idx, contract in enumerate(created_contracts, 1):
+                print(f"{idx}. 合约地址: {contract['address']}")
+                print(f"   创建交易: {contract['tx_hash']}")
+            
+            # 确定优先分析的合约地址
+            priority_addresses = [contract['address'] for contract in created_contracts]
+        else:
+            priority_addresses = []
+        
+        # 分析调用模式
+        call_patterns = analyze_call_patterns(call_graph, target_contract)
+        
+        # 转换调用模式为文本格式
+        if isinstance(call_patterns, dict):
+            call_patterns_text = json.dumps(call_patterns, indent=2)
+        elif isinstance(call_patterns, str):
+            call_patterns_text = call_patterns
+        else:
+            call_patterns_text = "No specific call patterns detected"
+        
+        # 分析复杂交易
+        transactions = get_transactions_for_analysis(db, target_contract)
+        complex_transactions = analyze_complex_transactions(transactions, call_graph)
+        
+        # 提取合约代码，优先处理目标创建的合约
+        contracts_info = extract_contract_codes_from_db(
+            db, 
+            list(related_addresses), 
+            priority_addresses
+        )
+        
+        # 生成合约代码上下文
+        code_context = generate_code_context(contracts_info)
+        
+        # 使用两种提示模板 - 基本行为分析和增强的安全分析
+        # 1. 基本行为分析
+        basic_prompt = BEHAVIOR_PROMPT.format(
+            code_context=code_context,
+            method_list=method_list,
+            target_contract=target_contract,
+            block_range=f"{start_block}-{end_block}",
+            related_contracts=", ".join(list(all_contracts)[:50]),
+            call_patterns=call_patterns_text
+        )
+        
+        # 2. 增强的安全分析，重点关注被创建的合约
+        enhanced_prompt = build_enhanced_security_prompt(
+            call_graph, 
+            target_contract,
+            complex_transactions,
+            created_contracts
+        )
+        
+        # 将代码上下文添加到增强的安全分析提示中
+        enhanced_prompt += f"\n\n## Contract Code Analysis\n\n{code_context}\n"
+        
+        # 生成基本报告
+        basic_report = request_ds(basic_prompt, "")
+        
+        # 生成增强的安全分析报告
+        enhanced_report = request_ds(enhanced_prompt, "")
+        
+        # 当生成最终报告时，明确告知LLM需要基于具体代码分析
+        final_prompt = FINAL_REPORT_PROMPT.format(
+            preliminary_analysis=basic_report,
+            behavior_analysis=enhanced_report
+        )
+        
+        # 添加代码上下文到最终prompt
+        final_prompt += f"\n\n## Available Contract Code\n\n{code_context}\n"
+        
+        final_report = request_ds(final_prompt, "")
+        
+        # 保存结果
+        filename = f"report_{target_contract or 'all'}.md"
+        with open(filename, "w") as f:
+            f.write(final_report)
+        
+        print(f"分析报告已生成：{filename}")
+        
+        # 构建返回结果
         behavior_data = {
             "target_contract": target_contract,
             "block_range": f"{start_block}-{end_block}",
             "related_contracts": list(all_contracts),
             "code_context": code_context,
-            "method_list": method_list
+            "method_list": method_list,
+            "call_patterns": call_patterns,
+            "created_contracts": created_contracts if has_created_contracts else [],
+            "basic_report": basic_report,
+            "enhanced_report": enhanced_report,
+            "final_report": final_report
         }
-        
-        # 如果有调用图，添加到分析中
-        if call_graph:
-            # 分析调用图中的模式
-            call_patterns = analyze_call_patterns(call_graph, target_contract)
-            behavior_data['call_patterns'] = call_patterns
         
         return behavior_data
         
@@ -1511,77 +1527,67 @@ def process_trace_recursively(trace, parent_node, related_contracts, call_path, 
         traceback.print_exc()
 
 def process_single_trace(call, parent_node, related_contracts, call_path, current_depth, max_depth, pruning_enabled=True):
-    """处理单个trace调用，支持多种trace格式"""
+    """处理单个trace格式"""
     from web3 import Web3
     
     try:
-        # 处理新的trace结构格式 (trace_transaction API返回的格式)
-        if 'action' in call:
-            action = call['action']
-            from_address = action.get('from', '').lower() if action.get('from') else ''
+        # 预判断是否是创建合约的trace
+        is_create = call.get('type') == 'create'
+        
+        # 从action中获取基本信息
+        action = call.get('action', {})
+        from_address = action.get('from', '').lower() if action.get('from') else ''
+        
+        # 对于创建合约，to地址存在于result.address中
+        if is_create and call.get('result', {}).get('address'):
+            to_address = call['result']['address'].lower()
+        else:
             to_address = action.get('to', '').lower() if action.get('to') else ''
-            input_data = action.get('input', '0x')
-            call_type = action.get('callType', 'call')  # call, delegatecall, staticcall, etc.
-            value = action.get('value', '0x0')
             
-            # 检查地址是否有效
-            has_from = bool(from_address and Web3.is_address(from_address))
-            has_to = bool(to_address and Web3.is_address(to_address))
+        input_data = action.get('input', '0x')
+        call_type = "create" if is_create else action.get('callType', action.get('type', 'call'))
+        value = action.get('value', '0x0')
+        
+        # 检查地址是否有效
+        has_from = bool(from_address and Web3.is_address(from_address))
+        has_to = bool(to_address and Web3.is_address(to_address))
+        
+        # 调试信息
+        method_id = "create" if is_create else "0x"
+        if not is_create and input_data and len(input_data) >= 10:
+            method_id = input_data[:10]
+        
+        print(f"处理trace: from={from_address}({has_from}), to={to_address}({has_to}), type={call_type}, method_id={method_id}")
+        
+        if has_from or has_to:
+            # 将有效地址添加到相关合约集合
+            if has_from:
+                related_contracts.add(from_address)
+            if has_to:
+                related_contracts.add(to_address)
             
-            print(f"处理trace: from={from_address}({has_from}), to={to_address}({has_to}), type={call_type}")
+            # 创建调用节点
+            call_node = {
+                'from': from_address if has_from else "unknown",
+                'to': to_address if has_to else "unknown",
+                'method_id': method_id,
+                'call_type': call_type,
+                'value': value,
+                'children': []
+            }
             
-            # 只有当from和to地址都有效时才进行处理
-            if has_from or has_to:
-                # 将有效地址添加到相关合约集合
-                if has_from:
-                    related_contracts.add(from_address)
-                if has_to:
-                    related_contracts.add(to_address)
-                
-                # 尝试提取方法ID
-                method_id = "0x"
-                if input_data and len(input_data) >= 10:
-                    method_id = input_data[:10]  # 包含0x前缀的方法ID
-                
-                # 创建新的调用节点
-                call_node = {
-                    'from': from_address if has_from else "unknown",
-                    'to': to_address if has_to else "unknown",
-                    'method_id': method_id,
-                    'call_type': call_type,
-                    'value': value,
-                    'children': []
-                }
-                
-                # 将调用节点添加到父节点的children列表
-                parent_node['children'].append(call_node)
-                
-                # 从input数据中提取可能的地址
-                if input_data and len(input_data) > 10:
-                    try:
-                        extracted_addresses = extract_addresses_from_input(input_data)
-                        related_contracts.update(extracted_addresses)
-                    except Exception as e:
-                        print(f"从input提取地址时出错: {str(e)}")
-                
-                # 检查是否需要剪枝
-                if pruning_enabled and has_to:
-                    try:
-                        if is_dex_pool_contract(to_address):
-                            call_node['pruned'] = True
-                            call_node['pruned_reason'] = 'DEX_POOL'
-                            print(f"剪枝: 跳过DEX池子合约 {to_address}")
-                            return
-                    except Exception as e:
-                        print(f"检查DEX池子合约时出错: {str(e)}")
-                
-                # 构建新的调用路径
-                new_call_path = call_path
-                if has_to:
-                    new_call_path = call_path + [to_address]
-                
-                # 递归处理子trace
-                if 'subtraces' in call and call['subtraces'] > 0:
+            # 添加到父节点
+            parent_node['children'].append(call_node)
+            
+            # 构建新调用路径
+            new_call_path = call_path
+            if has_to:
+                new_call_path = call_path + [to_address]
+            
+            # 递归处理子trace
+            if 'subtraces' in call and call['subtraces'] > 0:
+                # 检查是否可以继续处理更深的调用
+                if current_depth < max_depth:
                     if 'calls' in call and isinstance(call['calls'], list):
                         for subcall in call['calls']:
                             process_trace_recursively(
@@ -1593,60 +1599,8 @@ def process_single_trace(call, parent_node, related_contracts, call_path, curren
                                 max_depth,
                                 pruning_enabled
                             )
-            else:
-                print(f"跳过无效地址的trace")
-        
-        # 处理旧格式的trace (直接包含from/to字段的格式)
-        elif 'from' in call and 'to' in call:
-            from_address = call.get('from', '').lower() if call.get('from') else ''
-            to_address = call.get('to', '').lower() if call.get('to') else ''
-            
-            # 检查地址是否有效
-            has_from = bool(from_address and Web3.is_address(from_address))
-            has_to = bool(to_address and Web3.is_address(to_address))
-            
-            if has_from or has_to:
-                # 将有效地址添加到相关合约集合
-                if has_from:
-                    related_contracts.add(from_address)
-                if has_to:
-                    related_contracts.add(to_address)
-                
-                # 创建新的调用节点
-                call_node = {
-                    'from': from_address if has_from else "unknown",
-                    'to': to_address if has_to else "unknown",
-                    'method_id': call.get('method_id', '0x'),
-                    'call_type': call.get('type', 'call'),
-                    'value': call.get('value', '0x0'),
-                    'children': []
-                }
-                
-                # 将调用节点添加到父节点的children列表
-                parent_node['children'].append(call_node)
-                
-                # 构建新的调用路径
-                new_call_path = call_path
-                if has_to:
-                    new_call_path = call_path + [to_address]
-                
-                # 递归处理子trace
-                if 'children' in call and isinstance(call['children'], list):
-                    for child in call['children']:
-                        process_trace_recursively(
-                            child,
-                            call_node,
-                            related_contracts,
-                            new_call_path,
-                            current_depth + 1,
-                            max_depth,
-                            pruning_enabled
-                        )
-            else:
-                print(f"跳过无效地址的旧格式trace")
-        else:
-            print(f"未识别的trace格式: {list(call.keys()) if isinstance(call, dict) else type(call)}")
-    
+                else:
+                    print(f"达到最大深度 {max_depth}，停止处理子调用")
     except Exception as e:
         print(f"处理trace时出错: {str(e)}")
         import traceback
@@ -1712,32 +1666,42 @@ def process_old_format_trace(trace, parent_node, related_contracts, call_path, c
         traceback.print_exc()
 
 def build_transaction_call_graph(target_contract, start_block, end_block, max_depth=3, pruning_enabled=True):
-    """构建交易调用图，利用已存储的trace数据"""
-    import traceback
-    import json
-    from database import get_db
-    from database.models import UserInteraction
-    from sqlalchemy import and_
-    
-    print(f"开始构建交易调用图，目标合约：{target_contract}，区块范围：{start_block}-{end_block}")
-    
-    # 使用单一数据库会话，而不是为每个操作创建新会话
+    """构建交易调用图"""
     db = next(get_db())
+    w3 = Web3(Web3.HTTPProvider(settings.NETWORKS["ethereum"]["rpc_url"]))
+    
+    target_contract_lower = target_contract.lower()
     call_graph = {}
-    processed_txs = set()
+    processed_txs = set()  # 初始化已处理交易集合
     
     try:
-        # 查询所有相关交易
+        from sqlalchemy import and_, or_
+        
+        # 更新查询条件，查找所有可能与目标合约相关的交易
         interactions = db.query(UserInteraction).filter(
             and_(
-                UserInteraction.target_contract == target_contract.lower(),
+                or_(
+                    UserInteraction.target_contract == target_contract_lower,
+                    UserInteraction.caller_contract == target_contract_lower,
+                    # 包括method_name为'create'的交易(合约创建)
+                    and_(
+                        UserInteraction.method_name == 'create',
+                        UserInteraction.caller_contract == target_contract_lower
+                    )
+                ),
                 UserInteraction.block_number >= start_block,
-                UserInteraction.block_number <= end_block,
-                UserInteraction.trace_data.isnot(None)  # 确保有trace数据
+                UserInteraction.block_number <= end_block
             )
         ).all()
         
-        print(f"找到 {len(interactions)} 笔与合约 {target_contract} 相关的交易")
+        # 输出诊断信息
+        print(f"找到 {len(interactions)} 笔与目标合约相关的交易")
+        for idx, tx in enumerate(interactions, 1):
+            print(f"交易 {idx}: {tx.tx_hash}")
+            print(f"    Block: {tx.block_number}")
+            print(f"    From: {tx.caller_contract}")
+            print(f"    To: {tx.target_contract}")
+            print(f"    Method: {tx.method_name}")
         
         # 收集所有交易中已提取的地址
         all_related_addresses = set()
@@ -1952,6 +1916,923 @@ def process_trace_old_format_without_db(trace, parent_node, related_contracts, c
         print(f"处理旧格式trace时出错: {str(e)}")
         import traceback
         traceback.print_exc()
+
+def extract_kg_triples_from_call_graph(call_graph):
+    """从调用图中提取知识图谱三元组
+    
+    Args:
+        call_graph (dict): 交易调用图
+        
+    Returns:
+        list: 三元组列表，每个三元组形式为(caller, relation, callee)
+    """
+    triples = []
+    
+    def process_node(node, tx_hash):
+        """递归处理调用节点，提取三元组"""
+        if not isinstance(node, dict):
+            return
+            
+        caller = node.get('from', 'unknown')
+        callee = node.get('to', 'unknown')
+        method = node.get('method', node.get('method_id', 'unknown'))
+        call_type = node.get('call_type', 'call')
+        value = node.get('value', '0x0')
+        
+        # 构建关系描述
+        relation = call_type
+        if method and method != 'unknown':
+            relation = f"{call_type}_{method}"
+            
+        # 如果有价值转移，在关系中体现
+        if value and value != '0x0' and value != '0':
+            try:
+                # 尝试将value转换为ETH
+                value_int = int(value, 16) if value.startswith('0x') else int(value)
+                eth_value = value_int / 10**18
+                if eth_value > 0:
+                    relation = f"{relation}_value_{eth_value:.4f}ETH"
+            except:
+                pass
+        
+        # 添加三元组，包含交易哈希作为上下文
+        triple = {
+            'caller': caller,
+            'relation': relation,
+            'callee': callee,
+            'tx_hash': tx_hash,
+            'context': f"({caller}) --{relation}--> ({callee}) [tx:{tx_hash}]"
+        }
+        triples.append(triple)
+        
+        # 递归处理子节点
+        for child in node.get('children', []):
+            process_node(child, tx_hash)
+    
+    # 遍历调用图中的每个交易
+    for tx_hash, data in call_graph.items():
+        if 'call_hierarchy' in data and isinstance(data['call_hierarchy'], dict):
+            process_node(data['call_hierarchy'], tx_hash)
+    
+    return triples
+
+def extract_neighbor_relations(triples, topic_entity):
+    """提取与主题实体直接相关的关系
+    
+    Args:
+        triples (list): 三元组列表
+        topic_entity (str): 主题实体地址
+        
+    Returns:
+        list: 相邻关系列表
+    """
+    # 标准化地址格式
+    topic_entity = topic_entity.lower()
+    
+    # 收集与主题实体相关的关系
+    neighbor_relations = []
+    
+    for triple in triples:
+        caller = triple['caller'].lower()
+        callee = triple['callee'].lower()
+        
+        # 主题实体作为调用者
+        if caller == topic_entity:
+            neighbor_relations.append({
+                'direction': 'outgoing',
+                'relation': triple['relation'],
+                'entity': callee,
+                'context': triple['context'],
+                'tx_hash': triple['tx_hash']
+            })
+        
+        # 主题实体作为被调用者
+        if callee == topic_entity:
+            neighbor_relations.append({
+                'direction': 'incoming',
+                'relation': triple['relation'],
+                'entity': caller,
+                'context': triple['context'],
+                'tx_hash': triple['tx_hash']
+            })
+    
+    return neighbor_relations
+
+def extract_call_path_triples(triples, entity, max_depth=2):
+    """提取围绕实体的多跳调用路径
+    
+    Args:
+        triples (list): 三元组列表
+        entity (str): 实体地址
+        max_depth (int): 最大跳数
+        
+    Returns:
+        list: 调用路径列表
+    """
+    entity = entity.lower()
+    
+    # 构建图结构
+    graph = {}
+    for triple in triples:
+        caller = triple['caller'].lower()
+        callee = triple['callee'].lower()
+        
+        if caller not in graph:
+            graph[caller] = []
+        graph[caller].append({
+            'target': callee,
+            'relation': triple['relation'],
+            'context': triple['context'],
+            'tx_hash': triple['tx_hash']
+        })
+    
+    # 使用BFS寻找路径
+    call_paths = []
+    visited = set()
+    queue = [(entity, [], 0)]  # (节点, 路径, 深度)
+    
+    while queue:
+        node, path, depth = queue.pop(0)
+        
+        # 如果达到最大深度，继续下一个节点
+        if depth >= max_depth:
+            continue
+        
+        # 查找节点的邻居
+        neighbors = graph.get(node, [])
+        for neighbor in neighbors:
+            next_node = neighbor['target']
+            new_path = path + [neighbor]
+            
+            # 避免循环
+            path_key = f"{node}_{next_node}"
+            if path_key in visited:
+                continue
+            visited.add(path_key)
+            
+            # 将路径添加到结果中
+            if path:  # 只添加非空路径
+                call_paths.append(new_path)
+            
+            # 添加到队列继续搜索
+            queue.append((next_node, new_path, depth + 1))
+    
+    return call_paths
+
+def build_kg_prompt(call_graph, topic_entity):
+    """构建基于知识图谱的LLM提示
+    
+    Args:
+        call_graph (dict): 交易调用图
+        topic_entity (str): 主题实体地址
+        
+    Returns:
+        str: 构造的提示词
+    """
+    # 提取知识图谱三元组
+    triples = extract_kg_triples_from_call_graph(call_graph)
+    
+    # 1. 提取与主题实体直接相关的关系
+    neighbor_relations = extract_neighbor_relations(triples, topic_entity)
+    
+    # 分类为入向和出向关系
+    incoming_relations = [rel for rel in neighbor_relations if rel['direction'] == 'incoming']
+    outgoing_relations = [rel for rel in neighbor_relations if rel['direction'] == 'outgoing']
+    
+    # 构建关系描述字符串
+    incoming_str = "入向调用路径:\n" + "\n".join([
+        f"- {rel['entity']} --{rel['relation']}--> {topic_entity} [tx:{rel['tx_hash']}]" 
+        for rel in incoming_relations[:10]  # 限制显示数量
+    ]) if incoming_relations else "入向调用路径: 无"
+    
+    outgoing_str = "出向调用路径:\n" + "\n".join([
+        f"- {topic_entity} --{rel['relation']}--> {rel['entity']} [tx:{rel['tx_hash']}]" 
+        for rel in outgoing_relations[:10]  # 限制显示数量
+    ]) if outgoing_relations else "出向调用路径: 无"
+    
+    # 2. 提取多跳调用路径
+    call_paths = extract_call_path_triples(triples, topic_entity, max_depth=2)
+    
+    # 按交易哈希分组路径，选取最有代表性的路径
+    tx_paths = {}
+    for path in call_paths:
+        if not path:
+            continue
+        tx_hash = path[0]['tx_hash']
+        if tx_hash not in tx_paths or len(path) > len(tx_paths[tx_hash]):
+            tx_paths[tx_hash] = path
+    
+    # 构建调用链描述
+    call_chains_str = "代表性调用链:\n"
+    for i, (tx_hash, path) in enumerate(list(tx_paths.items())[:5]):  # 限制显示数量
+        chain_str = f"{i+1}. 交易 {tx_hash} 的调用链:\n"
+        for hop in path:
+            chain_str += f"   - {hop['context']}\n"
+        call_chains_str += chain_str + "\n"
+    
+    if not tx_paths:
+        call_chains_str += "无代表性调用链\n"
+    
+    # 3. 构建最终提示词
+    final_prompt = f"""
+## 基于知识图谱的合约调用分析
+
+当前分析目标: {topic_entity}
+
+### 直接调用关系
+{incoming_str}
+
+{outgoing_str}
+
+### 调用链分析
+{call_chains_str}
+
+请根据上述合约调用图谱信息分析:
+1. 该合约在调用链中扮演的角色（调用发起者、中间合约、终点合约）
+2. 最重要的3条调用路径及其功能意义
+3. 是否存在异常调用模式，如循环调用、可疑的价值转移等
+4. 结合代码特征，该合约是否可能参与安全事件，及可能的攻击向量
+
+输出格式:
+- 角色分析: [分析结果]
+- 关键路径: [路径1, 路径2, 路径3]
+- 异常模式: [有/无，若有请详述]
+- 安全评估: [低/中/高风险，原因]
+"""
+    
+    return final_prompt
+
+def enhance_behavior_analysis_with_kg(behavior_data, call_graph, target_contract):
+    """用知识图谱分析增强行为分析报告
+    
+    Args:
+        behavior_data (dict): 原始行为分析数据
+        call_graph (dict): 交易调用图
+        target_contract (str): 目标合约地址
+        
+    Returns:
+        dict: 增强后的行为分析数据
+    """
+    if not call_graph:
+        return behavior_data
+    
+    # 生成知识图谱分析
+    kg_prompt = build_kg_prompt(call_graph, target_contract)
+    
+    # 请求LLM生成知识图谱分析结果
+    try:
+        kg_analysis = request_ds(kg_prompt, "")
+        
+        # 将知识图谱分析结果添加到行为分析数据中
+        behavior_data['knowledge_graph_analysis'] = {
+            'prompt': kg_prompt,
+            'analysis': kg_analysis
+        }
+    except Exception as e:
+        print(f"生成知识图谱分析时出错: {str(e)}")
+        behavior_data['knowledge_graph_analysis'] = {
+            'error': str(e)
+        }
+    
+    return behavior_data
+
+def build_attack_chain_analysis(call_graph, target_contract):
+    """
+    构建攻击链分析，使用知识图谱帮助LLM理解可能的攻击路径
+    
+    Args:
+        call_graph (dict): 交易调用图
+        target_contract (str): 目标合约地址
+        
+    Returns:
+        dict: 攻击链分析结果
+    """
+    # 1. 提取关键函数调用关系
+    suspicious_functions = [
+        "transfer", "transferFrom", "approve", "swap", 
+        "borrow", "liquidate", "flash", "execute", "delegatecall",
+        "selfdestruct", "call", "withdraw"
+    ]
+    
+    # 2. 构建调用关系图
+    call_relations = []
+    attack_paths = []
+    
+    for tx_hash, data in call_graph.items():
+        if 'call_hierarchy' not in data:
+            continue
+            
+        # 分析单个交易中的调用路径
+        paths = []
+        
+        def traverse_hierarchy(node, current_path=None):
+            if current_path is None:
+                current_path = []
+                
+            # 记录当前节点信息
+            method = node.get('method', node.get('method_id', '0x'))
+            call_type = node.get('call_type', 'call')
+            from_addr = node.get('from', 'unknown')
+            to_addr = node.get('to', 'unknown')
+            value = node.get('value', '0x0')
+            
+            # 构建节点描述
+            node_info = {
+                'from': from_addr,
+                'to': to_addr,
+                'method': method,
+                'call_type': call_type,
+                'value': value
+            }
+            
+            # 添加到当前路径
+            new_path = current_path + [node_info]
+            
+            # 检查是否有可疑函数调用
+            is_suspicious = False
+            if any(sus in str(method).lower() for sus in suspicious_functions):
+                is_suspicious = True
+                
+            # 检查是否有价值转移
+            has_value = False
+            if value and value != '0x0':
+                try:
+                    value_int = int(value, 16) if value.startswith('0x') else int(value)
+                    if value_int > 0:
+                        has_value = True
+                except:
+                    pass
+            
+            # 如果是可疑调用或有价值转移，记录路径
+            if is_suspicious or has_value or call_type == 'delegatecall':
+                paths.append({
+                    'path': new_path,
+                    'suspicious': is_suspicious,
+                    'has_value': has_value,
+                    'special_call': call_type if call_type != 'call' else None
+                })
+            
+            # 递归处理子节点
+            for child in node.get('children', []):
+                traverse_hierarchy(child, new_path)
+        
+        # 从根节点开始分析
+        traverse_hierarchy(data['call_hierarchy'])
+        
+        # 如果找到可疑路径，添加到结果中
+        if paths:
+            attack_paths.append({
+                'tx_hash': tx_hash,
+                'paths': paths
+            })
+    
+    # 3. 生成更有针对性的攻击链分析
+    formatted_paths = []
+    
+    for tx_entry in attack_paths:
+        tx_hash = tx_entry['tx_hash']
+        
+        for path_info in tx_entry['paths']:
+            path = path_info['path']
+            path_str = " -> ".join([
+                f"{p['from']}:{p['method']}:{p['to']}" 
+                for p in path
+            ])
+            
+            # 标记路径特征
+            features = []
+            if path_info['suspicious']:
+                features.append("可疑函数调用")
+            if path_info['has_value']:
+                features.append("ETH转移")
+            if path_info['special_call']:
+                features.append(f"{path_info['special_call']}调用")
+            
+            formatted_paths.append({
+                'tx_hash': tx_hash,
+                'path': path_str,
+                'features': features,
+                'raw_path': path
+            })
+    
+    # 4. 针对每条可疑路径生成分析
+    attack_chain_analysis = {
+        'target_contract': target_contract,
+        'potential_attack_paths': formatted_paths,
+        'summary': {}
+    }
+    
+    # 5. 统计特征出现频率，识别最可能的攻击模式
+    pattern_counter = {}
+    
+    for path in formatted_paths:
+        # 生成模式特征字符串
+        pattern = "|".join(sorted(path['features']))
+        if pattern not in pattern_counter:
+            pattern_counter[pattern] = 0
+        pattern_counter[pattern] += 1
+    
+    # 对模式按频率排序
+    sorted_patterns = sorted(pattern_counter.items(), key=lambda x: x[1], reverse=True)
+    attack_chain_analysis['summary']['patterns'] = [
+        {'pattern': pattern, 'count': count} for pattern, count in sorted_patterns
+    ]
+    
+    return attack_chain_analysis
+
+def generate_attack_chain_prompt(attack_analysis, contracts_code):
+    """
+    根据攻击链分析生成针对性的提示，引导LLM分析攻击链
+    
+    Args:
+        attack_analysis (dict): 攻击链分析结果
+        contracts_code (dict): 合约代码信息
+        
+    Returns:
+        str: 生成的提示
+    """
+    # 获取可能的攻击路径
+    paths = attack_analysis['potential_attack_paths']
+    
+    # 选择最具代表性的路径(最多5条)
+    representative_paths = sorted(
+        paths, 
+        key=lambda x: len(x['features']), 
+        reverse=True
+    )[:5]
+    
+    # 构建提示
+    prompt = f"""
+## 攻击链分析
+
+对目标合约 {attack_analysis['target_contract']} 进行深入攻击链分析，基于以下发现的可疑调用路径：
+
+"""
+    
+    # 添加可疑路径信息
+    for i, path in enumerate(representative_paths):
+        prompt += f"""
+### 可疑路径 {i+1}
+- 交易: {path['tx_hash']}
+- 特征: {', '.join(path['features'])}
+- 调用链: {path['path']}
+"""
+    
+    # 添加具体合约代码分析指导
+    prompt += """
+## 攻击链分析指南
+
+请基于以上调用路径和相关合约代码，分析以下几点：
+
+1. 调用路径中是否存在漏洞利用的特征（如重入、访问控制缺失、价值转移异常等）
+2. 结合每个合约的代码实现，分析调用序列如何形成完整攻击链
+3. 针对每个关键调用点，说明其在攻击过程中的作用
+4. 识别出主要攻击者地址和受害合约
+5. 提供完整的攻击链重建，从攻击入口到最终获利
+
+注意分析中需要结合合约代码中的具体实现，而不仅是基于函数名称进行猜测。
+"""
+    
+    return prompt
+
+def enhance_behavior_analysis_with_attack_chain(behavior_data, call_graph, target_contract):
+    """集成攻击链分析到行为分析中
+    
+    Args:
+        behavior_data (dict): 行为分析数据
+        call_graph (dict): 交易调用图
+        target_contract (str): 目标合约地址
+        
+    Returns:
+        dict: 增强后的行为分析数据
+    """
+    if not call_graph:
+        return behavior_data
+    
+    # 1. 构建攻击链分析
+    attack_analysis = build_attack_chain_analysis(call_graph, target_contract)
+    
+    # 2. 如果找到潜在攻击路径，生成针对性提示
+    if attack_analysis['potential_attack_paths']:
+        contracts_code = {}  # 此处假设已有合约代码信息
+        # 实际实现中需要从behavior_data中提取合约代码信息
+        if 'code_context' in behavior_data:
+            contracts_code = behavior_data['code_context']
+        
+        attack_chain_prompt = generate_attack_chain_prompt(attack_analysis, contracts_code)
+        
+        # 3. 请求LLM生成攻击链分析
+        try:
+            attack_chain_result = request_ds(attack_chain_prompt, "")
+            
+            # 4. 将攻击链分析结果添加到行为分析数据中
+            behavior_data['attack_chain_analysis'] = {
+                'raw_data': attack_analysis,
+                'prompt': attack_chain_prompt,
+                'analysis': attack_chain_result
+            }
+        except Exception as e:
+            print(f"生成攻击链分析时出错: {str(e)}")
+            behavior_data['attack_chain_analysis'] = {
+                'error': str(e)
+            }
+    else:
+        behavior_data['attack_chain_analysis'] = {
+            'no_suspicious_paths': True,
+            'message': "未发现可疑的攻击路径"
+        }
+    
+    return behavior_data
+
+def extract_contract_codes_from_db(db, contract_addresses, priority_addresses=None):
+    """增强版合约代码提取，支持优先级合约"""
+    if priority_addresses is None:
+        priority_addresses = []
+    
+    # 确保优先地址格式统一
+    priority_addresses = [addr.lower() for addr in priority_addresses if addr]
+    
+    # 将优先地址添加到合约地址列表开头
+    for addr in reversed(priority_addresses):
+        if addr in contract_addresses:
+            contract_addresses.remove(addr)
+        contract_addresses.insert(0, addr)
+    
+    contracts_info = []
+    for address in contract_addresses:
+        contract = get_contract_full_info(db, address)
+        if contract:
+            # 标记该合约是否为优先分析对象
+            is_priority = address.lower() in [addr.lower() for addr in priority_addresses]
+            
+            # 添加合约类型标签
+            contract_type = "未知"
+            if contract.get('is_proxy'):
+                contract_type = "代理合约"
+            elif address.lower() == contract_addresses[0].lower():
+                contract_type = "目标合约"
+            elif is_priority:
+                contract_type = "目标创建的合约" if address in priority_addresses else "关键合约"
+            
+            # 确保合约有类型字段
+            contract['type'] = contract.get('type', contract_type)
+            if is_priority:
+                contract['is_priority'] = True
+            
+            contracts_info.append(contract)
+    
+    return contracts_info
+
+def build_enhanced_security_prompt(call_graph, target_contract, complex_txs=None, created_contracts=None):
+    """构建增强的安全分析提示，聚焦攻击链分析"""
+    from web3 import Web3
+    
+    # 获取相关交易及调用统计
+    tx_count = len(call_graph) if call_graph else 0
+    
+    # 获取所有相关合约
+    all_contracts = set()
+    for tx_hash, data in call_graph.items():
+        all_contracts.update(data.get('related_contracts', []))
+    
+    # 获取方法调用统计
+    method_counts = {}
+    value_transfers = []
+    circular_paths = []
+    
+    # 分析每个交易的调用图
+    for tx_hash, data in call_graph.items():
+        # 统计方法调用
+        def count_methods(node):
+            method_id = node.get('method_id', node.get('method', 'unknown'))
+            if method_id not in method_counts:
+                method_counts[method_id] = 0
+            method_counts[method_id] += 1
+            
+            # 检查是否是价值转移
+            if node.get('value') and node.get('value') != '0x0' and node.get('value') != '0':
+                try:
+                    value_wei = int(node['value'], 16) if isinstance(node['value'], str) and node['value'].startswith('0x') else int(node['value'])
+                    if value_wei > 0:
+                        value_eth = value_wei / 10**18
+                        if value_eth > 0.01:  # 只记录大于0.01 ETH的转账
+                            value_transfers.append({
+                                'from': node['from'],
+                                'to': node['to'],
+                                'value_eth': value_eth,
+                                'tx_hash': tx_hash
+                            })
+                except Exception as e:
+                    print(f"解析转账金额时出错: {str(e)}")
+            
+            # 递归处理子调用
+            for child in node.get('children', []):
+                count_methods(child)
+        
+        # 处理调用图根节点
+        count_methods(data['call_hierarchy'])
+        
+        # 查找循环调用路径
+        paths = find_circular_paths(data['call_hierarchy'])
+        if paths:
+            for path in paths:
+                circular_paths.append({
+                    'tx_hash': tx_hash,
+                    'path': path
+                })
+    
+    # 排序方法调用
+    sorted_methods = sorted(method_counts.items(), key=lambda x: x[1], reverse=True)
+    method_statistics = "\n".join([f"{method}: {count} calls" for method, count in sorted_methods[:20]])
+    
+    # 格式化资金流向
+    value_transfers.sort(key=lambda x: x['value_eth'], reverse=True)
+    value_transfers_text = ""
+    for idx, transfer in enumerate(value_transfers[:10], 1):
+        value_transfers_text += f"{idx}. {transfer['value_eth']:.6f} ETH from {transfer['from']} to {transfer['to']}\n"
+        value_transfers_text += f"   Transaction: {transfer['tx_hash']}\n\n"
+    
+    # 循环路径文本
+    circular_paths_text = ""
+    if circular_paths:
+        circular_paths_text = "## Circular Call Patterns\n\n"
+        for idx, path_info in enumerate(circular_paths[:5], 1):
+            path_str = " -> ".join(path_info['path'])
+            circular_paths_text += f"{idx}. Path: {path_str}\n"
+            circular_paths_text += f"   Transaction: {path_info['tx_hash']}\n\n"
+    
+    # 创建的合约信息
+    created_contracts_section = ""
+    if created_contracts and len(created_contracts) > 0:
+        created_contracts_section = """
+## Target Created Contracts (CRITICAL FOCUS)
+
+The following contracts were created by the target contract and are central to understanding the attack:
+"""
+        for idx, contract in enumerate(created_contracts, 1):
+            created_contracts_section += f"\n{idx}. Contract Address: `{contract['address']}`"
+            created_contracts_section += f"\n   Creation Transaction: `{contract['tx_hash']}`"
+    
+    # 复杂交易信息
+    complex_txs_section = ""
+    if complex_txs and len(complex_txs) > 0:
+        complex_txs_section = "\n## Complex Transactions Analysis\n\n"
+        for idx, tx in enumerate(complex_txs[:5], 1): # 只显示前5个最复杂的交易
+            complex_txs_section += f"{idx}. Transaction Hash: `{tx['tx_hash']}`\n"
+            complex_txs_section += f"   Call Depth: {tx['depth']}, Contracts Involved: {tx['contract_count']}\n\n"
+    
+    # 构建提示模板
+    prompt = f"""
+# Definitive Blockchain Security Analysis
+
+## Primary Objective
+Perform a code-centric security analysis of contract `{target_contract}` and its interactions. Your analysis must be based exclusively on provided contract code and transaction data.
+
+{created_contracts_section}
+
+## Focus Areas for Analysis
+
+1. **CODE-SPECIFIC VULNERABILITY IDENTIFICATION**:
+   - Examine the victim contract's code line-by-line to identify the EXACT vulnerable function(s)
+   - Quote the specific vulnerable code segments and explain precisely how they enabled the attack
+   - Identify pattern-matching for known vulnerabilities (e.g., reentrancy, flash loan attacks, price manipulation)
+
+2. **TRANSACTION-BACKED ATTACK FLOW**:
+   - Map each step in the attack chain to specific function calls and transactions
+   - Explain which specific contract functions were called, in what order, and with what parameters
+   - Directly reference transaction hashes when describing attack flow
+
+3. **TECHNICAL EXPLOITATION DETAILS**:
+   - Explain the exact technical mechanism of exploitation
+   - Identify which specific lines of code in the attacker contract were used to exploit the vulnerability
+   - Detail the exact sequence of state changes that occurred during the attack
+
+## Transaction Data
+
+### Method Call Statistics
+{method_statistics}
+
+### Value Transfers
+{value_transfers_text}
+
+{circular_paths_text}
+{complex_txs_section}
+
+## Mandatory Output Format
+
+Your analysis MUST include:
+
+1. **Exact Vulnerable Function(s)**: Name and quote the specific function(s) in the victim contract that contain the vulnerability.
+
+2. **Precise Attack Sequence**: Document each step in the attack with reference to specific function calls and transactions.
+
+3. **Definitive Root Cause**: Provide the exact code issue that enabled the attack, with line references.
+
+4. **Code-Based Evidence**: Support all assertions with direct references to the contract code or transaction data.
+
+IMPORTANT: Do NOT use speculative language (e.g., "could be", "might have", "possibly"). If information cannot be definitively determined from the code or transaction data, clearly state this rather than speculating.
+"""
+    
+    return prompt
+
+def update_behavior_analysis_with_code(behavior_data, call_graph, target_contract):
+    """增强行为分析，重点分析目标合约创建的合约"""
+    try:
+        # 获取数据库连接
+        db = next(get_db())
+        
+        # 先识别目标合约创建的合约
+        created_contracts = identify_created_contracts(call_graph, target_contract)
+        
+        # 如果找到了创建的合约，添加到behavior_data
+        if created_contracts:
+            behavior_data['created_contracts'] = created_contracts
+            print(f"发现 {len(created_contracts)} 个由目标合约创建的合约")
+            
+            # 优先分析被创建的合约的代码
+            created_addresses = [contract['address'] for contract in created_contracts]
+            print(f"将重点分析以下创建的合约: {', '.join(created_addresses)}")
+            
+            # 获取创建的合约的代码
+            created_contracts_info = []
+            for addr in created_addresses:
+                contract_code = load_contract_code(db, addr)
+                if contract_code:
+                    contract_code['type'] = '目标创建的合约'  # 标记为被创建的合约
+                    contract_code['address'] = addr
+                    created_contracts_info.append(contract_code)
+                    print(f"已加载合约 {addr} 的代码")
+            
+            # 生成被创建合约的代码上下文
+            created_code_context = generate_code_context(created_contracts_info)
+            
+            # 添加到behavior_data
+            behavior_data['created_contracts_code'] = created_code_context
+            
+            # 为了确保安全分析重点关注被创建的合约，我们把它添加到prompt中
+            enhanced_prompt = f"""
+## Security Analysis for Contract Created by Target
+
+The target contract has created the following contract: `{created_addresses[0]}`
+
+This contract is likely the key to understanding the attack/behavior, as it was specifically created by the target contract.
+
+Below is the decompiled code of the created contract:
+
+```solidity
+{created_code_context}
+```
+
+Please analyze this contract's code with particular focus, as it's central to understanding the target's behavior.
+"""
+            
+            # 使用增强的安全分析提示
+            behavior_data['enhanced_analysis'] = request_ds(enhanced_prompt, [])
+        
+        return behavior_data
+    except Exception as e:
+        print(f"增强行为分析时出错: {str(e)}")
+        traceback.print_exc()
+        return behavior_data
+
+def analyze_complex_transactions(transactions, call_graph):
+    """识别并分析复杂交易模式"""
+    complex_txs = []
+    
+    for tx in transactions:
+        tx_hash = tx.tx_hash
+        if tx_hash not in call_graph:
+            continue
+            
+        # 分析调用深度和宽度
+        call_data = call_graph[tx_hash]
+        
+        # 计算调用深度
+        def get_max_depth(node, current_depth=0):
+            if not node.get('children'):
+                return current_depth
+            
+            child_depths = [get_max_depth(child, current_depth+1) 
+                           for child in node['children']]
+            return max(child_depths) if child_depths else current_depth
+        
+        # 计算涉及的不同合约数量
+        involved_contracts = set()
+        def count_contracts(node):
+            if node.get('from'):
+                involved_contracts.add(node['from'].lower())
+            if node.get('to'):
+                involved_contracts.add(node['to'].lower())
+            
+            for child in node.get('children', []):
+                count_contracts(child)
+        
+        # 执行复杂度计算
+        count_contracts(call_data['call_hierarchy'])
+        max_depth = get_max_depth(call_data['call_hierarchy'])
+        
+        # 定义复杂交易的标准: 深度大于3或涉及5个以上合约
+        is_complex = (max_depth > 3 or len(involved_contracts) > 5)
+        if is_complex:
+            complex_txs.append({
+                'tx_hash': tx_hash,
+                'depth': max_depth,
+                'contract_count': len(involved_contracts),
+                'involved_contracts': list(involved_contracts)
+            })
+    
+    # 按复杂度排序
+    complex_txs.sort(key=lambda x: (x['depth'], x['contract_count']), reverse=True)
+    return complex_txs
+
+def get_transactions_for_analysis(db, target_contract):
+    """获取与目标合约相关的所有交易记录"""
+    from sqlalchemy import or_
+    
+    try:
+        # 查询交易数据
+        transactions = db.query(UserInteraction).filter(
+            or_(
+                UserInteraction.target_contract == target_contract.lower(),
+                UserInteraction.caller_contract == target_contract.lower()
+            )
+        ).all()
+        
+        return transactions
+    except Exception as e:
+        print(f"获取交易数据时出错: {str(e)}")
+        return []
+
+def identify_created_contracts(call_graph, target_contract):
+    """从交易trace数据中识别由目标合约创建的合约"""
+    created_contracts = []
+    
+    target_contract_lower = target_contract.lower()
+    
+    # 获取数据库连接
+    db = next(get_db())
+    
+    # 查询与目标合约相关的所有交易
+    from sqlalchemy import or_
+    transactions = db.query(UserInteraction).filter(
+        or_(
+            UserInteraction.target_contract == target_contract_lower,
+            UserInteraction.caller_contract == target_contract_lower
+        )
+    ).all()
+    
+    # 检查每个交易的trace数据
+    for tx in transactions:
+        if not tx.trace_data:
+            continue
+            
+        try:
+            trace_data = json.loads(tx.trace_data)
+            
+            # 处理单个trace对象
+            if isinstance(trace_data, dict):
+                if trace_data.get('type') == 'create' and trace_data.get('action', {}).get('from', '').lower() == target_contract_lower:
+                    # 从result.address获取创建的合约地址
+                    created_address = trace_data.get('result', {}).get('address')
+                    if created_address:
+                        created_contracts.append({
+                            'address': created_address.lower(),
+                            'creator': target_contract_lower,
+                            'tx_hash': tx.tx_hash,
+                            'block_number': tx.block_number
+                        })
+                        print(f"在交易 {tx.tx_hash} 中找到目标合约创建的合约: {created_address}")
+            
+            # 处理trace列表
+            elif isinstance(trace_data, list):
+                for item in trace_data:
+                    if isinstance(item, dict) and item.get('type') == 'create' and item.get('action', {}).get('from', '').lower() == target_contract_lower:
+                        created_address = item.get('result', {}).get('address')
+                        if created_address:
+                            created_contracts.append({
+                                'address': created_address.lower(),
+                                'creator': target_contract_lower,
+                                'tx_hash': tx.tx_hash,
+                                'block_number': tx.block_number
+                            })
+                            print(f"在交易 {tx.tx_hash} 中找到目标合约创建的合约: {created_address}")
+        except Exception as e:
+            print(f"处理交易 {tx.tx_hash} 的trace数据时出错: {str(e)}")
+    
+    # 去重
+    unique_contracts = []
+    seen_addresses = set()
+    for contract in created_contracts:
+        if contract['address'] not in seen_addresses:
+            seen_addresses.add(contract['address'])
+            unique_contracts.append(contract)
+    
+    print(f"发现目标合约创建的合约: {len(unique_contracts)} 个")
+    for idx, contract in enumerate(unique_contracts, 1):
+        print(f"{idx}. 合约地址: {contract['address']}")
+        print(f"   创建交易: {contract['tx_hash']}")
+    
+    return unique_contracts
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--query":
