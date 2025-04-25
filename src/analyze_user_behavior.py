@@ -69,36 +69,40 @@ Based on the provided contract code and transaction data, generate a definitive 
 
 ## CRITICAL ANALYSIS REQUIREMENTS
 
-1. **CODE-BASED ANALYSIS ONLY** - Your analysis must be based strictly on the actual code provided and transaction data. DO NOT include speculative statements or hypothetical scenarios.
+1. **IDENTIFY THE VICTIM CONTRACT** - The target address provided is the attacker/exploit contract, NOT the victim. You must first analyze the call graph to determine which contract was actually exploited. The victim is typically a protocol or service contract that lost assets, not a basic token contract.
 
-2. **IDENTIFY EXACT VULNERABILITY FUNCTIONS** - You must identify the specific function(s) in the victim contract where the vulnerability exists. Quote the exact vulnerable code segments and explain precisely how they were exploited.
+2. **IDENTIFY EXPLOITATION PATTERN** - After identifying the victim contract, analyze its code to find the specific vulnerable function(s). Quote the exact vulnerable code segments.
 
-3. **CONCRETE ATTACK CHAIN** - Reconstruct the exact attack sequence based solely on transaction data and code evidence. Each step must reference specific function calls backed by transaction evidence.
+3. **ANALYZE ATTACK CONTRACT CODE** - Examine both the target contract and any contracts it created to understand the exact exploitation technique used.
 
-4. **DEFINITIVE LANGUAGE** - Use only definitive language throughout your analysis. Avoid terms like "could be", "might have", "possibly", etc. If you cannot determine something with certainty from the code or transaction data, state that it cannot be determined rather than speculating.
+4. **PRECISE ATTACK RECONSTRUCTION** - Document the exact attack sequence with specific function calls and transaction evidence. Avoid speculation.
 
 ## Output Format
 
 # Security Incident Analysis Report
 
-## Vulnerability Summary
-[Precise description of the identified vulnerability with exact function name and code location]
+## Attack Overview
+[Brief overview identifying the attack type and affected protocol/contract]
 
-## Contract Analysis
-- Target Contract: [Analysis with specific function and line references]
-- Attacker Contract(s): [Analysis with specific function and line references]
+## Contract Identification
+- Attacker Contract: `{target_contract}` [Brief analysis]
+- Victim Contract: [Identified vulnerable contract address with explanation of how you determined this is the victim]
+- Helper Contracts: [Any contracts created by the attacker that participated in the exploit]
 
-## Attack Chain Reconstruction
-[Step-by-step breakdown of the exact attack flow with specific transaction and function call references]
+## Vulnerability Analysis
+[Analysis of the specific vulnerability in the victim contract with exact function and code references]
+
+## Attack Execution
+[Step-by-step breakdown of the attack flow with specific transaction references]
 
 ## Exploitation Mechanism
-[Detailed technical explanation of exactly how the vulnerability was exploited, with code references]
+[Technical explanation of how the vulnerability was exploited, referencing both victim and attacker code]
 
-## Root Cause
-[Definitive statement on the exact code issue that enabled the attack]
+## Impact Assessment
+[Description of the financial or technical impact of the exploit]
 
-## Security Recommendations
-[Specific code fixes that would prevent this exact vulnerability]
+## Prevention Measures
+[Specific code fixes that would prevent this vulnerability]
 """
 
 def parse_user_query(user_input):
@@ -119,11 +123,12 @@ def generate_preliminary_analysis(params):
     )
     return request_ds(prompt, "")
 
-def generate_final_report(preliminary, behavior):
+def generate_final_report(preliminary, behavior, target_contract):
     """生成最终安全分析报告，整合初步分析和详细行为分析"""
     prompt = FINAL_REPORT_PROMPT.format(
         preliminary_analysis=preliminary,
-        behavior_analysis=behavior
+        behavior_analysis=behavior,
+        target_contract=target_contract
     )
     
     final_report = request_ds(prompt, "")
@@ -535,7 +540,11 @@ def process_user_query(params):
             
         # 生成最终报告
         print("\n=== 生成最终报告 ===")
-        final_report = generate_final_report(preliminary_analysis, behavior_analysis)
+        final_report = generate_final_report(
+            preliminary_analysis, 
+            behavior_analysis,
+            params['target_contract']  # 传入target_contract参数
+        )
         
         # 保存报告
         report_file = save_report(final_report, params)
@@ -823,18 +832,27 @@ def analyze_behavior_new(target_contract=None, start_block=None, end_block=None,
         # 生成合约代码上下文
         code_context = generate_code_context(contracts_info)
         
-        # 使用两种提示模板 - 基本行为分析和增强的安全分析
-        # 1. 基本行为分析
+        # 添加一个突出的注释提醒LLM这是攻击者合约地址
+        attacker_reminder = """
+## IMPORTANT: ATTACKER-VICTIM CLARIFICATION
+The target address provided is likely the ATTACKER'S contract or exploit address, NOT the victim contract.
+You must first analyze the transaction flow to identify which contract was actually exploited.
+Look for contracts that lost value, showed unusual behavior, or were targeted repeatedly.
+"""
+        
+        # 修改基本提示以包含关于攻击者/受害者关系的信息
         basic_prompt = BEHAVIOR_PROMPT.format(
             code_context=code_context,
             method_list=method_list,
-            target_contract=target_contract,
+            target_contract=target_contract + " (likely attacker contract)",
             block_range=f"{start_block}-{end_block}",
             related_contracts=", ".join(list(all_contracts)[:50]),
             call_patterns=call_patterns_text
         )
         
-        # 2. 增强的安全分析，重点关注被创建的合约
+        basic_prompt = attacker_reminder + basic_prompt
+        
+        # 修改增强的安全分析提示以强调受害者识别
         enhanced_prompt = build_enhanced_security_prompt(
             call_graph, 
             target_contract,
@@ -842,20 +860,41 @@ def analyze_behavior_new(target_contract=None, start_block=None, end_block=None,
             created_contracts
         )
         
-        # 将代码上下文添加到增强的安全分析提示中
-        enhanced_prompt += f"\n\n## Contract Code Analysis\n\n{code_context}\n"
-        
-        # 生成基本报告
-        basic_report = request_ds(basic_prompt, "")
-        
-        # 生成增强的安全分析报告
+        # 确保增强的安全分析生成的报告明确识别受害者合约
         enhanced_report = request_ds(enhanced_prompt, "")
         
-        # 当生成最终报告时，明确告知LLM需要基于具体代码分析
+        # 当生成最终报告时，强调受害者识别的重要性
         final_prompt = FINAL_REPORT_PROMPT.format(
-            preliminary_analysis=basic_report,
-            behavior_analysis=enhanced_report
+            preliminary_analysis=basic_prompt,
+            behavior_analysis=enhanced_report,
+            target_contract=target_contract  # 添加这一行
         )
+        
+        # 添加对调用图中价值流转的强调，帮助识别受害者
+        value_flow_summary = ""
+        for tx_hash, tx_data in call_graph.items():
+            # 构建简单的价值流转摘要
+            high_value_transfers = find_high_value_transfers(tx_data['call_hierarchy'])
+            if high_value_transfers:
+                value_flow_summary += f"\nTransaction {tx_hash} value flows:\n"
+                for transfer in high_value_transfers:
+                    # 检查键名并使用正确的键访问值
+                    if 'value_eth' in transfer:
+                        value = transfer['value_eth']
+                    elif 'value' in transfer:
+                        # 如果值是16进制字符串，转换为浮点数（以太）
+                        value_str = transfer['value']
+                        if isinstance(value_str, str) and value_str.startswith('0x'):
+                            value = int(value_str, 16) / 10**18  # 转换为ETH
+                        else:
+                            value = float(value_str) / 10**18 if isinstance(value_str, (int, float)) else 0
+                    else:
+                        value = 0
+                    
+                    # 使用处理后的值
+                    value_flow_summary += f"- {value:.6f} ETH from {transfer['from']} to {transfer['to']}\n"
+        
+        final_prompt += f"\n\n## Value Flow Analysis (Help Identify Victim)\n{value_flow_summary}\n"
         
         # 添加代码上下文到最终prompt
         final_prompt += f"\n\n## Available Contract Code\n\n{code_context}\n"
@@ -878,7 +917,7 @@ def analyze_behavior_new(target_contract=None, start_block=None, end_block=None,
             "method_list": method_list,
             "call_patterns": call_patterns,
             "created_contracts": created_contracts if has_created_contracts else [],
-            "basic_report": basic_report,
+            "basic_report": basic_prompt,
             "enhanced_report": enhanced_report,
             "final_report": final_report
         }
@@ -2583,36 +2622,53 @@ The following contracts were created by the target contract and are central to u
     
     # 构建提示模板
     prompt = f"""
-# Definitive Blockchain Security Analysis
+# Blockchain Attack Analysis: Victim Identification and Exploitation Analysis
 
-## Primary Objective
-Perform a code-centric security analysis of contract `{target_contract}` and its interactions. Your analysis must be based exclusively on provided contract code and transaction data.
+## Critical Context
+IMPORTANT: The target address `{target_contract}` is likely the ATTACKER'S contract, not the victim. You must analyze the call graph to identify which contract was actually exploited.
 
 {created_contracts_section}
 
-## Focus Areas for Analysis
+## Analysis Requirements
 
-1. **CODE-SPECIFIC VULNERABILITY IDENTIFICATION**:
-   - Examine the victim contract's code line-by-line to identify the EXACT vulnerable function(s)
-   - Quote the specific vulnerable code segments and explain precisely how they enabled the attack
-   - Identify pattern-matching for known vulnerabilities (e.g., reentrancy, flash loan attacks, price manipulation)
+1. **VICTIM CONTRACT IDENTIFICATION**:
+   - Analyze the call graph and value transfers to determine which contract was attacked
+   - Look for patterns such as:
+     * Contracts that lost significant value
+     * Contracts that were called with unusual parameters
+     * Protocols that showed unusual behavior (e.g., large withdrawals, price manipulation)
+   - The victim is typically NOT a simple token contract, but a more complex protocol contract
 
-2. **TRANSACTION-BACKED ATTACK FLOW**:
+2. **ATTACK CONTRACT ANALYSIS**:
+   - Analyze the target contract (`{target_contract}`) and any contracts it created
+   - Identify how these contracts were designed to exploit the victim
+
+3. **VULNERABILITY IDENTIFICATION**:
+   - Once the victim is identified, analyze its code to find the exact vulnerable function(s)
+   - Quote specific vulnerable code segments and explain the technical weakness
+
+4. **ATTACK FLOW RECONSTRUCTION**:
    - Map each step in the attack chain to specific function calls and transactions
-   - Explain which specific contract functions were called, in what order, and with what parameters
-   - Directly reference transaction hashes when describing attack flow
+   - Explain which functions were called, in what order, and with what parameters
+   - Directly reference transaction hashes when describing the attack flow
 
-3. **TECHNICAL EXPLOITATION DETAILS**:
-   - Explain the exact technical mechanism of exploitation
-   - Identify which specific lines of code in the attacker contract were used to exploit the vulnerability
-   - Detail the exact sequence of state changes that occurred during the attack
+5. **MEV ATTACK PATTERN IDENTIFICATION**:
+   - Analyze the call graph to identify potential common MEV (Maximal Extractable Value) extraction patterns
+   - Look specifically for:
+     * Sandwich attacks: Transactions that bracket a victim's trade with buy orders before and sell orders after
+     * Arbitrage: Quick trades across multiple DEXs to profit from price differences
+     * Front-running: Transactions that extract value by ordering before user transactions
+     * Back-running: Transactions that extract value by ordering after key transactions
+   - Check for rapid interactions with multiple DEX contracts in a single transaction
+   - Identify if flashloans were used to amplify MEV extraction
+   - Determine if the transaction directly competes with or manipulates other pending transactions
 
 ## Transaction Data
 
 ### Method Call Statistics
 {method_statistics}
 
-### Value Transfers
+### Value Transfers (Critical for Victim Identification)
 {value_transfers_text}
 
 {circular_paths_text}
@@ -2622,15 +2678,17 @@ Perform a code-centric security analysis of contract `{target_contract}` and its
 
 Your analysis MUST include:
 
-1. **Exact Vulnerable Function(s)**: Name and quote the specific function(s) in the victim contract that contain the vulnerability.
+1. **Victim Contract Identification**: Explain which contract was exploited and how you determined this.
 
-2. **Precise Attack Sequence**: Document each step in the attack with reference to specific function calls and transactions.
+2. **Exploit Technique**: Describe the specific exploitation technique used by the attacker.
 
-3. **Definitive Root Cause**: Provide the exact code issue that enabled the attack, with line references.
+3. **Vulnerable Function(s)**: Name and quote the specific function(s) in the victim contract that contain the vulnerability.
 
-4. **Code-Based Evidence**: Support all assertions with direct references to the contract code or transaction data.
+4. **Attack Sequence**: Document each step in the attack with reference to specific function calls and transactions.
 
-IMPORTANT: Do NOT use speculative language (e.g., "could be", "might have", "possibly"). If information cannot be definitively determined from the code or transaction data, clearly state this rather than speculating.
+5. **Code-Based Evidence**: Support all assertions with direct references to contract code or transaction data.
+
+IMPORTANT: Avoid speculation. If information cannot be definitively determined from the code or transaction data, clearly state this rather than guessing.
 """
     
     return prompt
