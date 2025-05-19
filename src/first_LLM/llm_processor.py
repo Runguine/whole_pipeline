@@ -8,11 +8,16 @@ import os
 from web3 import Web3
 import traceback
 import requests
+import datetime  # 添加datetime模块用于日期处理
 
 class LLMQueryProcessor:
     PROMPT_TEMPLATE = """As a blockchain security analysis expert, please extract from the user query:
 1. Target contract address (a hexadecimal string starting with 0x)
-2. Block range (start and end block numbers)
+2. Time/Block range:
+   - Block numbers (start and end block numbers)
+   - Specific date (YYYY-MM-DD format)
+   - Date range (from YYYY-MM-DD to YYYY-MM-DD)
+   - Relative time (e.g., "last 3 days")
 3. Analysis focus, with emphasis on:
    - Security event/hack attack analysis
    - Contract interaction behavior analysis
@@ -28,7 +33,7 @@ User input: {user_input}
 Return the result strictly in the following JSON format, without any additional text:
 {{
   "token_identifier": "Target contract address",
-  "time_range_hint": "Specific time range",
+  "time_range_hint": "Specific time/date range (including YYYY-MM-DD format if present)",
   "analysis_focus": ["Security event analysis", "Interaction behavior analysis", "Code analysis", "Fund flow"],
   "analysis_type": "security_analysis/contract_analysis/transaction_analysis"
 }}"""
@@ -43,8 +48,29 @@ Return the result strictly in the following JSON format, without any additional 
     def parse_query(self, user_input: str) -> Tuple[Dict, Dict]:
         """Return (LLM parsing result, RAG data)"""
         # Get current block (at the start of the function to avoid repeated calls)
-        w3 = Web3(Web3.HTTPProvider(os.getenv("ALCHEMY_URL")))
-        current_block = w3.eth.block_number
+        try:
+            # 获取alchemy URL
+            alchemy_url = os.getenv("ALCHEMY_URL")
+            if not alchemy_url:
+                alchemy_api_key = os.getenv("ALCHEMY_API_KEY")
+                if alchemy_api_key:
+                    alchemy_url = f"https://eth-mainnet.g.alchemy.com/v2/{alchemy_api_key}"
+                else:
+                    # 尝试从网络配置获取
+                    try:
+                        network_config = settings.NETWORKS["ethereum"]
+                        alchemy_url = network_config.get('rpc_url')
+                    except Exception:
+                        alchemy_url = "https://eth-mainnet.g.alchemy.com/v2/demo"  # 默认值
+            
+            w3 = Web3(Web3.HTTPProvider(alchemy_url))
+            current_block = w3.eth.block_number
+            print(f"当前区块高度: {current_block}")
+        except Exception as e:
+            print(f"获取当前区块失败: {str(e)}")
+            # 使用一个保守的默认值
+            current_block = 19000000  # 设置一个合理的近期区块号作为默认值
+            print(f"使用默认当前区块高度: {current_block}")
         
         # Initialize variables
         start_block = None
@@ -77,6 +103,20 @@ Return the result strictly in the following JSON format, without any additional 
         )
         time_match = time_pattern.search(user_input)
         
+        # 新增：检查是否指定了具体日期 (YYYY-MM-DD)
+        date_pattern = re.compile(
+            r'(\d{4})-(\d{1,2})-(\d{1,2})'  # 匹配 YYYY-MM-DD 格式
+        )
+        date_match = date_pattern.search(user_input)
+        
+        # 如果指定了日期范围 (两个日期，用"to"或"-"连接)
+        date_range_pattern = re.compile(
+            r'(\d{4})-(\d{1,2})-(\d{1,2})'  # 第一个日期
+            r'\s*(?:to|[-~])\s*'              # 分隔符（支持"to"、"-"或"~"）
+            r'(\d{4})-(\d{1,2})-(\d{1,2})'  # 第二个日期
+        )
+        date_range_match = date_range_pattern.search(user_input)
+        
         # 修改时间范围处理逻辑
         if block_match:
             # 用户指定了具体的区块范围
@@ -84,6 +124,48 @@ Return the result strictly in the following JSON format, without any additional 
             end_block = int(block_match.group(2))
             time_range_hint = f"Block range: {start_block} - {end_block}"
             print(f"Detected user-specified block range: {start_block} - {end_block}")
+        elif date_range_match:
+            # 用户指定了日期范围
+            start_year, start_month, start_day = int(date_range_match.group(1)), int(date_range_match.group(2)), int(date_range_match.group(3))
+            end_year, end_month, end_day = int(date_range_match.group(4)), int(date_range_match.group(5)), int(date_range_match.group(6))
+            
+            # 转换为日期对象
+            try:
+                start_date = datetime.datetime(start_year, start_month, start_day)
+                end_date = datetime.datetime(end_year, end_month, end_day)
+                # 设置end_date为当天结束时间
+                end_date = end_date.replace(hour=23, minute=59, second=59)
+                
+                # 计算日期对应的区块范围
+                start_block, end_block = self._date_to_block_range(start_date, end_date, current_block)
+                time_range_hint = f"Date range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}"
+                print(f"Detected date range: {time_range_hint}, mapped to blocks: {start_block} - {end_block}")
+            except (ValueError, TypeError) as e:
+                print(f"Error processing date range: {str(e)}")
+                # 使用默认值
+                end_block = current_block
+                start_block = max(0, current_block - 7200)  # 默认一天的区块
+                time_range_hint = "Recent history (could not process specified date range)"
+        elif date_match:
+            # 用户指定了单个日期
+            year, month, day = int(date_match.group(1)), int(date_match.group(2)), int(date_match.group(3))
+            
+            # 转换为日期对象
+            try:
+                # 创建指定日期的开始和结束时间
+                start_date = datetime.datetime(year, month, day)
+                end_date = start_date.replace(hour=23, minute=59, second=59)
+                
+                # 计算日期对应的区块范围
+                start_block, end_block = self._date_to_block_range(start_date, end_date, current_block)
+                time_range_hint = f"Date: {start_date.strftime('%Y-%m-%d')}"
+                print(f"Detected date: {time_range_hint}, mapped to blocks: {start_block} - {end_block}")
+            except (ValueError, TypeError) as e:
+                print(f"Error processing date: {str(e)}")
+                # 使用默认值
+                end_block = current_block
+                start_block = max(0, current_block - 7200)  # 默认一天的区块
+                time_range_hint = "Recent history (could not process specified date)"
         elif time_match:
             # 用户指定了时间范围（如"last hour"）
             amount_text = time_match.group(1)
@@ -236,7 +318,7 @@ Return the result strictly in the following JSON format, without any additional 
             "analysis_focus": list(set(analysis_focus)),
             "analysis_type": analysis_type,
             "user_input": user_input,
-            "user_specified_blocks": block_match is not None or time_match is not None,
+            "user_specified_blocks": block_match is not None or time_match is not None or date_match is not None or date_range_match is not None,
             "network": "ethereum"
         }
         
@@ -311,6 +393,8 @@ Return the result strictly in the following JSON format, without any additional 
         patterns = {
             'token': r'\b([A-Z]{3,5})\b|(\bERC-20\s+token\s+[\w\s]+)',
             'time_range': r'in (\d+) days|past (\d+) months',
+            'date': r'(\d{4})-(\d{1,2})-(\d{1,2})',  # 匹配 YYYY-MM-DD 格式
+            'date_range': r'(\d{4})-(\d{1,2})-(\d{1,2})\s*(?:to|[-~])\s*(\d{4})-(\d{1,2})-(\d{1,2})',  # 匹配日期范围
             'focus': r'security event|漏洞|fund flow'
         }
         result = {
@@ -326,6 +410,20 @@ Return the result strictly in the following JSON format, without any additional 
         if token_match:
             result['token_identifier'] = token_match.group(1) or token_match.group(2)
             result['confidence'] += 0.5
+        
+        # 日期识别
+        date_range_match = re.search(patterns['date_range'], text)
+        if date_range_match:
+            start_date = f"{date_range_match.group(1)}-{date_range_match.group(2)}-{date_range_match.group(3)}"
+            end_date = f"{date_range_match.group(4)}-{date_range_match.group(5)}-{date_range_match.group(6)}"
+            result['time_range_hint'] = f"Date range: {start_date} to {end_date}"
+            result['confidence'] += 0.3
+        else:
+            date_match = re.search(patterns['date'], text)
+            if date_match:
+                date_str = f"{date_match.group(1)}-{date_match.group(2)}-{date_match.group(3)}"
+                result['time_range_hint'] = f"Date: {date_str}"
+                result['confidence'] += 0.3
         
         return result
 
@@ -469,7 +567,21 @@ Return the result in the following JSON format, with no additional text:
         使用二分查找找到合约创建区块
         """
         try:
-            w3 = Web3(Web3.HTTPProvider(os.getenv("ALCHEMY_URL")))
+            # 获取Web3提供者URL
+            alchemy_url = os.getenv("ALCHEMY_URL")
+            if not alchemy_url:
+                alchemy_api_key = os.getenv("ALCHEMY_API_KEY")
+                if alchemy_api_key:
+                    alchemy_url = f"https://eth-mainnet.g.alchemy.com/v2/{alchemy_api_key}"
+                else:
+                    # 尝试从网络配置获取
+                    try:
+                        network_config = settings.NETWORKS["ethereum"]
+                        alchemy_url = network_config.get('rpc_url')
+                    except Exception:
+                        alchemy_url = "https://eth-mainnet.g.alchemy.com/v2/demo"  # 默认值
+            
+            w3 = Web3(Web3.HTTPProvider(alchemy_url))
             current_block = w3.eth.block_number
             
             print(f"Searching for contract creation block for {address}")
@@ -542,7 +654,21 @@ Return the result in the following JSON format, with no additional text:
                 return latest_tx.block_number
             
             # 2. 如果数据库没有记录，尝试通过API查询
-            w3 = Web3(Web3.HTTPProvider(os.getenv("ALCHEMY_URL")))
+            # 获取Web3提供者URL
+            alchemy_url = os.getenv("ALCHEMY_URL")
+            if not alchemy_url:
+                alchemy_api_key = os.getenv("ALCHEMY_API_KEY")
+                if alchemy_api_key:
+                    alchemy_url = f"https://eth-mainnet.g.alchemy.com/v2/{alchemy_api_key}"
+                else:
+                    # 尝试从网络配置获取
+                    try:
+                        network_config = settings.NETWORKS["ethereum"]
+                        alchemy_url = network_config.get('rpc_url')
+                    except Exception:
+                        alchemy_url = "https://eth-mainnet.g.alchemy.com/v2/demo"  # 默认值
+            
+            w3 = Web3(Web3.HTTPProvider(alchemy_url))
             current_block = w3.eth.block_number
             
             # 尝试使用Etherscan API查询
@@ -564,16 +690,32 @@ Return the result in the following JSON format, with no additional text:
                 print(f"使用Etherscan API查询最近交易失败: {str(e)}")
             
             # 3. 如果上述方法都失败，使用二分查找法查询最近的交易
-            return self._find_latest_tx_binary_search(address, current_block - max_blocks_back, current_block)
+            return self._find_latest_tx_binary_search(address, current_block - max_blocks_back, current_block, w3)
         
         except Exception as e:
             print(f"查找最近交易区块失败: {str(e)}")
             return None
 
-    def _find_latest_tx_binary_search(self, address: str, start_block: int, end_block: int) -> Optional[int]:
+    def _find_latest_tx_binary_search(self, address: str, start_block: int, end_block: int, w3: Web3 = None) -> Optional[int]:
         """使用二分查找查询地址的最近交易区块"""
         try:
-            w3 = Web3(Web3.HTTPProvider(os.getenv("ALCHEMY_URL")))
+            if w3 is None:
+                # 如果没有提供Web3实例，创建一个新的
+                alchemy_url = os.getenv("ALCHEMY_URL")
+                if not alchemy_url:
+                    alchemy_api_key = os.getenv("ALCHEMY_API_KEY")
+                    if alchemy_api_key:
+                        alchemy_url = f"https://eth-mainnet.g.alchemy.com/v2/{alchemy_api_key}"
+                    else:
+                        # 尝试从网络配置获取
+                        try:
+                            network_config = settings.NETWORKS["ethereum"]
+                            alchemy_url = network_config.get('rpc_url')
+                        except Exception:
+                            alchemy_url = "https://eth-mainnet.g.alchemy.com/v2/demo"  # 默认值
+                
+                w3 = Web3(Web3.HTTPProvider(alchemy_url))
+                
             latest_block = None
             
             print(f"开始二分查找地址 {address} 的最近交易，范围: {start_block} - {end_block}")
@@ -623,3 +765,147 @@ Return the result in the following JSON format, with no additional text:
         except Exception as e:
             print(f"二分查找最近交易区块失败: {str(e)}")
             return None
+
+    def _date_to_block_range(self, start_date: datetime.datetime, end_date: datetime.datetime, current_block: int) -> Tuple[int, int]:
+        """
+        将日期范围转换为区块范围，使用以太坊API获取更准确的信息
+        
+        参数:
+        - start_date: 开始日期
+        - end_date: 结束日期
+        - current_block: 当前区块号
+        
+        返回:
+        - 开始区块号和结束区块号的元组
+        """
+        try:
+            # 获取当前时间
+            now = datetime.datetime.now()
+            
+            # 转换日期为时间戳 (Unix timestamp)
+            start_timestamp = int(start_date.timestamp())
+            end_timestamp = int(end_date.timestamp())
+            current_timestamp = int(now.timestamp())
+            
+            # 获取以太坊API密钥
+            alchemy_api_key = os.getenv("ALCHEMY_API_KEY")
+            etherscan_api_key = os.getenv("ETHERSCAN_API_KEY")
+            
+            # 如果环境变量中没有直接的API密钥，尝试从网络配置中获取
+            if not etherscan_api_key:
+                try:
+                    network_config = settings.NETWORKS["ethereum"]
+                    etherscan_api_key = network_config.get('explorer_key')
+                    print(f"从网络配置中获取到API密钥: {etherscan_api_key is not None}")
+                except Exception as e:
+                    print(f"从网络配置获取API密钥失败: {str(e)}")
+            
+            alchemy_url = os.getenv("ALCHEMY_URL")
+            if not alchemy_url and alchemy_api_key:
+                alchemy_url = f"https://eth-mainnet.g.alchemy.com/v2/{alchemy_api_key}"
+                
+            start_block = None
+            end_block = None
+            
+            print(f"转换日期: {start_date.strftime('%Y-%m-%d')} 到 {end_date.strftime('%Y-%m-%d')}")
+            
+            # 尝试使用Etherscan API
+            if etherscan_api_key:
+                try:
+                    # 获取开始日期对应的区块
+                    start_url = f"https://api.etherscan.io/api?module=block&action=getblocknobytime&timestamp={start_timestamp}&closest=before&apikey={etherscan_api_key}"
+                    start_response = requests.get(start_url)
+                    start_data = start_response.json()
+                    
+                    if start_data.get("status") == "1" and "result" in start_data:
+                        start_block = int(start_data["result"])
+                        print(f"Etherscan API - 开始日期区块: {start_block}")
+                    
+                    # 获取结束日期对应的区块
+                    end_url = f"https://api.etherscan.io/api?module=block&action=getblocknobytime&timestamp={end_timestamp}&closest=before&apikey={etherscan_api_key}"
+                    end_response = requests.get(end_url)
+                    end_data = end_response.json()
+                    
+                    if end_data.get("status") == "1" and "result" in end_data:
+                        end_block = int(end_data["result"])
+                        print(f"Etherscan API - 结束日期区块: {end_block}")
+                        
+                except Exception as e:
+                    print(f"Etherscan API调用出错: {str(e)}")
+            
+            # 如果Etherscan API失败，尝试使用Web3方法估算
+            if start_block is None or end_block is None:
+                print("使用估算方法计算区块范围...")
+                # 使用前面获取的alchemy_url
+                web3_provider_url = alchemy_url or os.getenv("ALCHEMY_URL")
+                if not web3_provider_url:
+                    web3_provider_url = "https://eth-mainnet.g.alchemy.com/v2/demo"  # 使用一个默认值，但可能会受到限制
+                    print("警告：未找到有效的Web3提供者URL，使用默认值，可能受到限制")
+                
+                w3 = Web3(Web3.HTTPProvider(web3_provider_url))
+                
+                try:
+                    # 获取当前区块信息
+                    latest_block = w3.eth.get_block('latest')
+                    latest_block_number = latest_block.number
+                    latest_block_timestamp = latest_block.timestamp
+                    
+                    # 获取100个区块前的区块信息，计算平均出块时间
+                    old_block = w3.eth.get_block(latest_block_number - 100)
+                    old_block_timestamp = old_block.timestamp
+                    
+                    # 计算平均每秒出块数
+                    time_diff = latest_block_timestamp - old_block_timestamp
+                    blocks_per_second = 100 / time_diff if time_diff > 0 else 1/15
+                    
+                    print(f"计算得到的平均出块速率: {blocks_per_second:.6f} 块/秒")
+                    
+                    # 估算时间戳对应的区块
+                    if start_block is None:
+                        time_diff_start = current_timestamp - start_timestamp
+                        blocks_diff_start = int(time_diff_start * blocks_per_second)
+                        start_block = max(1, latest_block_number - blocks_diff_start)
+                        print(f"估算开始日期区块: {start_block}")
+                    
+                    if end_block is None:
+                        time_diff_end = current_timestamp - end_timestamp
+                        blocks_diff_end = int(time_diff_end * blocks_per_second)
+                        end_block = min(latest_block_number, latest_block_number - blocks_diff_end)
+                        print(f"估算结束日期区块: {end_block}")
+                
+                except Exception as e:
+                    print(f"Error in block range calculation: {str(e)}")
+                    # 使用保守的默认值：从创建区块开始往后推一天
+                    if start_block is not None:
+                        end_block = min(current_block, start_block + 7200)  # 约1天的区块
+                    else:
+                        start_block = max(0, current_block - 7200)  # 如果连创建区块都找不到，才用当前区块往前推
+                        end_block = current_block
+                    time_range_hint = "Recent history (limited range)"
+            
+            # 处理未来日期的情况
+            if start_timestamp > current_timestamp:
+                start_block = current_block
+            if end_timestamp > current_timestamp:
+                end_block = current_block
+            
+            # 确保开始区块不大于结束区块
+            if start_block > end_block:
+                start_block, end_block = end_block, start_block
+                
+            # 确保区块号在有效范围内
+            start_block = max(1, start_block)
+            end_block = min(current_block, end_block)
+            
+            # 如果差距太大，限制一下范围
+            if end_block - start_block > 1000000:  # 限制最大查询范围为100万个区块
+                end_block = start_block + 1000000
+            
+            print(f"最终确定的区块范围: {start_block} - {end_block}")
+            return start_block, end_block
+        
+        except Exception as e:
+            print(f"Error converting date to block range: {str(e)}")
+            traceback.print_exc()
+            # 返回默认值：当前区块和一天前的区块
+            return max(0, current_block - 7200), current_block

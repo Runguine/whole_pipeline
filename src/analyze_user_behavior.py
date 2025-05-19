@@ -77,12 +77,19 @@ Based on the provided contract code and transaction data, generate a definitive 
 
 4. **PRECISE ATTACK RECONSTRUCTION** - Document the exact attack sequence with specific function calls and transaction evidence. Avoid speculation.
 
+5. **RUGPULL DETECTION** - Specifically check for signs of a rugpull attack, including:
+   - Contract owner/creator suddenly removing significant liquidity from pools
+   - Suspicious privilege functions (unlimited minting, freezing transfers, changing fees)
+   - Backdoor functions allowing creators to bypass safety mechanisms
+   - Sudden large transfers of tokens to exchanges
+   - Suspicious timing of privileged operations (e.g., modifying contract then draining funds)
+
 ## Output Format
 
 # Security Incident Analysis Report
 
 ## Attack Overview
-[Brief overview identifying the attack type and affected protocol/contract]
+[Brief overview identifying the attack type (including rugpull if applicable) and affected protocol/contract]
 
 ## Contract Identification
 - Attacker Contract: `{target_contract}` [Brief analysis]
@@ -365,7 +372,7 @@ def generate_code_context(contracts_chain):
                 code_sections.append(
                     f"// 反编译代码（{contract['type']}合约 {contract['address']}）\n"
                     f"// 处理反编译代码时出错: {str(e)}"
-                )
+            )
         
         # ABI信息
         abi = contract.get("abi", [])
@@ -429,7 +436,6 @@ def analyze_input_data(input_data, abi):
                     for param_name, param_value in decoded[1].items():
                         if isinstance(param_value, str) and Web3.is_address(param_value):
                             extracted_addresses.append(param_value)
-                    
                             return {
                                 'method': decoded[0].fn_name,
                                 'params': dict(decoded[1]),
@@ -461,9 +467,9 @@ def analyze_input_data(input_data, abi):
                     params.append(f"Incomplete: {param}")
                     continue
                     
-        param = data[i:i+64]
-        # 检查是否是地址
-        if param.startswith('000000000000000000000000'):
+            param = data[i:i+64]
+            # 检查是否是地址
+            if param.startswith('000000000000000000000000'):
                 potential_address = '0x' + param[-40:]
                 if Web3.is_address(potential_address):
                     extracted_addresses.append(potential_address)
@@ -519,6 +525,16 @@ def process_user_query(params):
             pruning_enabled=True  # 启用剪枝
         )
         
+        # 执行Rugpull特征检测
+        print("\n=== 检测Rugpull特征 ===")
+        rugpull_analysis = detect_rugpull_patterns(call_graph, params['target_contract'])
+        if rugpull_analysis["is_likely_rugpull"]:
+            print(f"检测到可能的Rugpull行为，置信度: {rugpull_analysis['confidence']}")
+            for reason in rugpull_analysis["reasons"]:
+                print(f"- {reason}")
+        else:
+            print("未检测到明显的Rugpull特征")
+        
         # 生成初步分析
         print("\n=== 生成初步分析 ===")
         preliminary_analysis = generate_preliminary_analysis(params)
@@ -532,6 +548,10 @@ def process_user_query(params):
             related_addresses=params.get('related_addresses', []),
             call_graph=call_graph  # 传递调用图给行为分析
         )
+        
+        # 将rugpull分析结果添加到行为分析中
+        if isinstance(behavior_analysis, dict):
+            behavior_analysis['rugpull_analysis'] = rugpull_analysis
         
         # 检查行为分析结果
         if isinstance(behavior_analysis, str) and '错误' in behavior_analysis:
@@ -2379,13 +2399,14 @@ def build_attack_chain_analysis(call_graph, target_contract):
     
     return attack_chain_analysis
 
-def generate_attack_chain_prompt(attack_analysis, contracts_code):
+def generate_attack_chain_prompt(attack_analysis, contracts_code, rugpull_detected=False):
     """
     根据攻击链分析生成针对性的提示，引导LLM分析攻击链
     
     Args:
         attack_analysis (dict): 攻击链分析结果
         contracts_code (dict): 合约代码信息
+        rugpull_detected (bool): 是否检测到Rugpull特征
         
     Returns:
         str: 生成的提示
@@ -2400,7 +2421,7 @@ def generate_attack_chain_prompt(attack_analysis, contracts_code):
         reverse=True
     )[:5]
     
-    # 构建提示
+    # 构建基础提示
     prompt = f"""
 ## 攻击链分析
 
@@ -2415,6 +2436,38 @@ def generate_attack_chain_prompt(attack_analysis, contracts_code):
 - 交易: {path['tx_hash']}
 - 特征: {', '.join(path['features'])}
 - 调用链: {path['path']}
+"""
+    
+    # 如果检测到Rugpull，添加专门的Rugpull分析指南
+    if rugpull_detected:
+        prompt += """
+## Rugpull特征检测
+
+系统检测到此案例可能是Rugpull（跑路）事件。请特别关注以下方面：
+
+1. **权限分析** - 检查合约中是否存在过度特权函数，如：
+   - 无限铸币权限
+   - 暂停交易功能
+   - 修改交易费用的能力
+   - 黑名单/白名单功能
+   - 紧急提款功能
+
+2. **流动性池操作** - 分析流动性池交互，特别是：
+   - 是否有异常大额的流动性移除
+   - 是否有单方面移除（只取出一种代币）
+   - 是否在短时间内进行多次移除操作
+
+3. **资金流向** - 跟踪资金最终去向，特别关注：
+   - 向中心化交易所的大额转账
+   - 分散到多个地址的小额转账
+   - 向混币服务的转账
+   - 是否转为稳定币
+
+4. **时间线分析** - 构建完整的Rugpull时间线：
+   - 合约部署时间
+   - 修改关键参数的时间
+   - 大额资金提取的时间
+   - 社交媒体活动停止的时间（如有信息）
 """
     
     # 添加具体合约代码分析指导
@@ -2451,20 +2504,54 @@ def enhance_behavior_analysis_with_attack_chain(behavior_data, call_graph, targe
     # 1. 构建攻击链分析
     attack_analysis = build_attack_chain_analysis(call_graph, target_contract)
     
-    # 2. 如果找到潜在攻击路径，生成针对性提示
+    # 2. 检查是否有Rugpull分析结果
+    rugpull_analysis = behavior_data.get('rugpull_analysis', None)
+    rugpull_details = ""
+    
+    if rugpull_analysis and rugpull_analysis.get('is_likely_rugpull', False):
+        # 如果检测到Rugpull，增加Rugpull相关的提示
+        rugpull_details += "\n## Rugpull Analysis\n\n"
+        rugpull_details += f"Rugpull Confidence: {rugpull_analysis['confidence']}\n\n"
+        rugpull_details += "Rugpull Indicators:\n"
+        for reason in rugpull_analysis.get('reasons', []):
+            rugpull_details += f"- {reason}\n"
+        
+        # 添加详细的Rugpull指标
+        indicators = rugpull_analysis.get('indicators', {})
+        
+        if indicators.get('liquidity_removal') and len(indicators['liquidity_removal']) > 0:
+            rugpull_details += "\n### Liquidity Removal Evidence\n"
+            for idx, removal in enumerate(indicators['liquidity_removal'][:5], 1):
+                rugpull_details += f"{idx}. TX: {removal['tx_hash']}\n"
+                rugpull_details += f"   {removal['value_eth']:.4f} ETH removed via {removal['method']}\n"
+                rugpull_details += f"   From {removal['from']} to {removal['to']}\n"
+        
+        if indicators.get('exchange_transfers') and len(indicators['exchange_transfers']) > 0:
+            rugpull_details += "\n### Exchange Transfers Evidence\n"
+            for idx, transfer in enumerate(indicators['exchange_transfers'][:5], 1):
+                rugpull_details += f"{idx}. TX: {transfer['tx_hash']}\n"
+                rugpull_details += f"   {transfer['value_eth']:.4f} ETH sent to {transfer['exchange']} ({transfer['to']})\n"
+    
+    # 3. 如果找到潜在攻击路径，生成针对性提示
     if attack_analysis['potential_attack_paths']:
         contracts_code = {}  # 此处假设已有合约代码信息
         # 实际实现中需要从behavior_data中提取合约代码信息
         if 'code_context' in behavior_data:
             contracts_code = behavior_data['code_context']
         
-        attack_chain_prompt = generate_attack_chain_prompt(attack_analysis, contracts_code)
+        # 检查是否存在Rugpull并传递正确的参数
+        is_rugpull = rugpull_analysis and rugpull_analysis.get('is_likely_rugpull', False)
+        attack_chain_prompt = generate_attack_chain_prompt(attack_analysis, contracts_code, is_rugpull)
         
-        # 3. 请求LLM生成攻击链分析
+        # 如果有Rugpull分析，添加到提示中
+        if rugpull_details:
+            attack_chain_prompt += rugpull_details
+        
+        # 4. 请求LLM生成攻击链分析
         try:
             attack_chain_result = request_ds(attack_chain_prompt, "")
             
-            # 4. 将攻击链分析结果添加到行为分析数据中
+            # 5. 将攻击链分析结果添加到行为分析数据中
             behavior_data['attack_chain_analysis'] = {
                 'raw_data': attack_analysis,
                 'prompt': attack_chain_prompt,
@@ -2652,7 +2739,18 @@ IMPORTANT: The target address `{target_contract}` is likely the ATTACKER'S contr
    - Explain which functions were called, in what order, and with what parameters
    - Directly reference transaction hashes when describing the attack flow
 
-5. **MEV ATTACK PATTERN IDENTIFICATION**:
+5. **RUGPULL ATTACK DETECTION**:
+   - Check for Rugpull-specific indicators:
+     * Suspicious outflows from liquidity pools to creator/owner addresses
+     * Privileged functions being called just before large value transfers
+     * `removeLiquidity`, `withdraw`, or similar functions being called with unusual parameters
+     * Presence of backdoor functions or excessive admin privileges in contract code
+     * Suspicious token transfers to exchanges shortly after liquidity drains
+     * One-sided removal of assets from liquidity pools
+     * Changes to key contract parameters (fees, transfer restrictions) prior to value extraction
+   - Pay special attention to large value transfers to centralized exchanges or mixer services
+
+6. **MEV ATTACK PATTERN IDENTIFICATION**:
    - Analyze the call graph to identify potential common MEV (Maximal Extractable Value) extraction patterns
    - Look specifically for:
      * Sandwich attacks: Transactions that bracket a victim's trade with buy orders before and sell orders after
@@ -2680,7 +2778,7 @@ Your analysis MUST include:
 
 1. **Victim Contract Identification**: Explain which contract was exploited and how you determined this.
 
-2. **Exploit Technique**: Describe the specific exploitation technique used by the attacker.
+2. **Exploit Technique**: Describe the specific exploitation technique used by the attacker (including if it was a rugpull).
 
 3. **Vulnerable Function(s)**: Name and quote the specific function(s) in the victim contract that contain the vulnerability.
 
@@ -2891,6 +2989,177 @@ def identify_created_contracts(call_graph, target_contract):
         print(f"   创建交易: {contract['tx_hash']}")
     
     return unique_contracts
+
+def detect_rugpull_patterns(call_graph, target_contract):
+    """
+    在交易调用图中检测Rugpull特征
+    
+    Args:
+        call_graph (dict): 交易调用图
+        target_contract (str): 目标合约地址
+        
+    Returns:
+        dict: Rugpull分析结果
+    """
+    rugpull_indicators = {
+        "liquidity_removal": [],      # 流动性突然减少
+        "privilege_abuse": [],        # 权限滥用
+        "exchange_transfers": [],     # 向交易所的大额转账
+        "suspicious_functions": [],   # 可疑函数调用
+        "parameter_changes": []       # 关键参数变更
+    }
+    
+    # 常见交易所地址
+    exchange_addresses = {
+        "0xdac17f958d2ee523a2206206994597c13d831ec7": "Tether Treasury",
+        "0x28c6c06298d514db089934071355e5743bf21d60": "Binance",
+        "0x21a31ee1afc51d94c2efccaa2092ad1028285549": "Binance",
+        "0xbe0eb53f46cd790cd13851d5eff43d12404d33e8": "Binance",
+        "0x5a52e96bacdabb82fd05763e25335261b270efcb": "Binance",
+        "0x3f5ce5fbfe3e9af3971dd833d26ba9b5c936f0be": "Binance",
+        "0xd551234ae421e3bcba99a0da6d736074f22192ff": "Binance",
+        "0x564286362092d8e7936f0549571a803b203aaced": "Binance",
+        "0x0681d8db095565fe8a346fa0277bffde9c0edbbf": "Binance",
+        "0x4e9ce36e442e55ecd9025b9a6e0d88485d628a67": "Binance",
+        "0x8d12a197cb00d4747a1fe03395095ce2a5cc6819": "EtherDelta",
+        "0x2a0c0dbecc7e4d658f48e01e3fa353f44050c208": "IDEX",
+        "0x876eabf441b2ee5b5b0554fd502a8e0600950cfa": "Bitfinex",
+        "0x742d35cc6634c0532925a3b844bc454e4438f44e": "Bitfinex",
+        "0x1151314c646ce4e0efd76d1af4760ae66a9fe30f": "Bitfinex",
+        "0xcafb10ee663f465f9d10588ac44ed20ed608c11e": "Bitfinex",
+        "0x7180eb39a6264938fdb3effd7341c4727c382153": "Bitfinex",
+        "0x0a869d79a7052c7f1b55a8ebabbea3420f0d1e13": "Kraken",
+        "0xe853c56864a2ebe4576a807d26fdc4a0ada51919": "Kraken",
+        "0x267be1c1d684f78cb4f6a176c4911b741e4ffdc0": "Kraken",
+        "0xfa52274dd61e1643d2205169732f29114bc240b3": "Kraken",
+        "0x53d284357ec70ce289d6d64134dfac8e511c8a3d": "Kraken",
+    }
+    
+    # 可疑函数名称
+    suspicious_functions = [
+        "removeLiquidity", "withdraw", "emergencyWithdraw", "setFee", "updateFee",
+        "transferOwnership", "renounceOwnership", "pause", "unpause", "mint",
+        "burn", "blacklist", "setTaxFee", "excludeFromFee", "setMaxTxAmount"
+    ]
+    
+    # 分析每个交易
+    for tx_hash, data in call_graph.items():
+        call_hierarchy = data.get('call_hierarchy', {})
+        
+        # 检查大额价值转移
+        def check_value_transfers(node, path=None):
+            if path is None:
+                path = []
+            
+            current_path = path + [node]
+            
+            # 检查当前节点是否包含价值转移
+            if node.get('value') and node.get('value') != '0x0' and node.get('value') != '0':
+                try:
+                    value_wei = int(node['value'], 16) if isinstance(node['value'], str) and node['value'].startswith('0x') else int(node['value'])
+                    value_eth = value_wei / 10**18
+                    
+                    # 检查是否是大额转账（大于1 ETH）
+                    if value_eth > 1.0:
+                        # 检查接收方是否是交易所地址
+                        to_address = node.get('to', '').lower()
+                        from_address = node.get('from', '').lower()
+                        
+                        # 检查向交易所的转账
+                        if to_address in exchange_addresses:
+                            rugpull_indicators["exchange_transfers"].append({
+                                'tx_hash': tx_hash,
+                                'from': from_address,
+                                'to': to_address,
+                                'exchange': exchange_addresses[to_address],
+                                'value_eth': value_eth
+                            })
+                        
+                        # 检查从流动性池的大额提款
+                        # 注意：这需要更精确的标识，但我们可以通过方法名和大额转账的组合来推断
+                        method = node.get('method_id', node.get('method', '')).lower()
+                        if any(key in method for key in ["remove", "withdraw", "exit"]):
+                            rugpull_indicators["liquidity_removal"].append({
+                                'tx_hash': tx_hash,
+                                'from': from_address,
+                                'to': to_address,
+                                'method': method,
+                                'value_eth': value_eth
+                            })
+                except Exception as e:
+                    print(f"解析价值转移时出错: {str(e)}")
+            
+            # 检查特权函数调用
+            method = node.get('method_id', node.get('method', '')).lower()
+            for sus_func in suspicious_functions:
+                if sus_func.lower() in method:
+                    rugpull_indicators["suspicious_functions"].append({
+                        'tx_hash': tx_hash,
+                        'from': node.get('from', ''),
+                        'to': node.get('to', ''),
+                        'method': method
+                    })
+                    
+                    # 如果是设置参数类型的函数，标记为参数修改
+                    if any(param in method.lower() for param in ["set", "update", "change", "modify"]):
+                        rugpull_indicators["parameter_changes"].append({
+                            'tx_hash': tx_hash,
+                            'from': node.get('from', ''),
+                            'to': node.get('to', ''),
+                            'method': method
+                        })
+                    break
+            
+            # 检查是否是特权操作
+            if node.get('from', '').lower() == target_contract.lower():
+                # 目标合约发起的特权操作
+                if any(key in method.lower() for key in ["owner", "admin", "auth", "manage"]):
+                    rugpull_indicators["privilege_abuse"].append({
+                        'tx_hash': tx_hash,
+                        'from': node.get('from', ''),
+                        'to': node.get('to', ''),
+                        'method': method
+                    })
+            
+            # 递归检查子调用
+            for child in node.get('children', []):
+                check_value_transfers(child, current_path)
+        
+        # 从根节点开始分析
+        check_value_transfers(call_hierarchy)
+    
+    # 计算rugpull分数（简单启发式评分）
+    score = 0
+    reasons = []
+    
+    if len(rugpull_indicators["liquidity_removal"]) > 0:
+        score += 30
+        reasons.append(f"发现{len(rugpull_indicators['liquidity_removal'])}次大额流动性移除")
+    
+    if len(rugpull_indicators["exchange_transfers"]) > 0:
+        score += 25
+        reasons.append(f"发现{len(rugpull_indicators['exchange_transfers'])}次向交易所的大额转账")
+    
+    if len(rugpull_indicators["privilege_abuse"]) > 0:
+        score += 20
+        reasons.append(f"发现{len(rugpull_indicators['privilege_abuse'])}次特权操作")
+    
+    if len(rugpull_indicators["suspicious_functions"]) > 0:
+        score += 15
+        reasons.append(f"发现{len(rugpull_indicators['suspicious_functions'])}次可疑函数调用")
+    
+    if len(rugpull_indicators["parameter_changes"]) > 0:
+        score += 10
+        reasons.append(f"发现{len(rugpull_indicators['parameter_changes'])}次关键参数变更")
+    
+    # 返回分析结果
+    return {
+        "indicators": rugpull_indicators,
+        "score": score,
+        "reasons": reasons,
+        "is_likely_rugpull": score > 50,  # 分数超过50，可能是rugpull
+        "confidence": "高" if score > 70 else "中" if score > 50 else "低"
+    }
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--query":

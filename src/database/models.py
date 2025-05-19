@@ -29,7 +29,7 @@ class UserInteraction(Base):
     block_number = Column(BigInteger, nullable=False)
     tx_hash = Column(String(66), unique=True)
     timestamp = Column(TIMESTAMP)
-    input_data = Column(String(10000))  # 增加长度到10000以存储完整的input data
+    input_data = Column(String(20000))  # 增加长度到10000以存储完整的input data
     event_logs = Column(JSON)  # 存储交易收据中的事件日志
     trace_data = Column(JSON)  # 新增：存储交易追踪数据
     network = Column(String(20), default='ethereum')  # 固定为以太坊网络

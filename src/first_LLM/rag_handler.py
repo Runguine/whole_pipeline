@@ -339,14 +339,14 @@ class TokenRAGSystem:
             
             # 计算区块范围
             block_range = self._calculate_block_range(best_match_copy['data'])
-            
+        
             return best_match_copy, block_range
             
         except Exception as e:
             print(f"搜索与区块范围计算出错: {str(e)}")
             # 在出错情况下返回一致的格式
             return None, (0, 0)
-    
+        
     def _calculate_block_range(self, data: dict) -> Tuple[int, int]:
         """Maintain the original block range calculation logic but handle English time units"""
         try:
