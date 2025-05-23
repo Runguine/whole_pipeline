@@ -1,0 +1,74 @@
+安全分析报告
+生成时间: 2025-05-20 11:19:24
+目标合约: 0x253954d29386e174Ed4BC69902391a8ED3fd51ca
+区块范围: 14379219 - 14385677
+分析类型: transaction_analysis
+原始查询: Analyze the behavior of address 0x253954d29386e174Ed4BC69902391a8ED3fd51ca in 2022-03-14
+
+================================================================================
+
+# Security Incident Analysis Report
+
+## Attack Overview
+
+This report analyzes a complex interaction involving contract `0x253954d29386e174Ed4BC69902391a8ED3fd51ca` (identified as the attacker's contract) and identifies `0x5cad06e17452179abe3ee7f99ce649d16d059616` as the victim contract. The attack involves a series of `mint2` calls from various addresses to the attacker's contract, followed by a `withdraw` call from the victim back to the attacker's contract. This pattern suggests a potential vulnerability in the minting process that allows the attacker to manipulate balances and extract ETH from the victim contract. This is highly suspicious and could indicate a sophisticated exploit, possibly a rugpull orchestrated through a flawed minting mechanism combined with a privilege-enabled withdrawal. The circular call paths detected further support this assessment.
+
+## Contract Identification
+
+- **Attacker Contract:** `0x253954d29386e174Ed4BC69902391a8ED3fd51ca`
+  -  This contract is the destination of numerous incoming `mint2` calls, each carrying ETH. Furthermore, it then initiates a `withdraw` call on the victim contract, indicating that it's orchestrating the exploit.
+- **Victim Contract:** `0x5cad06e17452179abe3ee7f99ce649d16d059616`
+   - This contract is the origin of the `safeTransferFrom` and what appears to be a `withdraw` call (this is determined by function signature), and the destination of significant ETH value transfers originating from contract `0x253954d29386e174Ed4BC69902391a8ED3fd51ca`.
+- **Helper Contracts:** Addresses calling `mint2` on the attacker's contract. These contracts act as intermediaries, possibly to obfuscate the source of funds or to exploit a minting mechanism:
+    - `0xb2674844851da27d8b7cec9d67173a05f232af5a`
+    - `0x8e3964260ffa273944590e9a14cb9032a871caa1`
+    - `0xb8e1f01f73884a9d4e87b537e7ec1065d7b27350`
+    - `0xb256d31bda41c2ab66a0f3ddc2517f2e213b0062`
+    - `0x5853ed4f26a3fcea565b3fbc698bb19cdf6deb85`
+    - ... (and many others)
+
+## Vulnerability Analysis
+
+Based on the decompiled code of `0x253954d29386e174Ed4BC69902391a8ED3fd51ca`, the `mint2` function, is called by a great number of addresses:
+
+```
+def unknown3aa18088(uint256 _param1) payable:
+  mem[64] = 96
+  require calldata.size - 4 >=′ 32
+  require _param1 == _param1
+  if not uint8(saleIsActive):
+      revert with 0x8c379a000000000000000000000000000000000000000000000000000000000, \'Sale must be active to mint Token\'
+  if _param1 <= 0:
+      revert with 0x8c379a000000000000000000000000000000000000000000000000000000000, \'Can only mint one or more tokens at a time\'
+  if tokenByIndex.length > -_param1 - 1:
+      revert with \'NH{q\', 17
+  if tokenByIndex.length + _param1 > MAX_TOKENS:
+      revert with 0x8c379a000000000000000000000000000000000000000000000000000000000, \'Purchase would exceed max supply of tokens\'
+  if tokenPrice and _param1 > -1 / tokenPrice:
+      revert with \'NH{q\', 17
+  require call.value >= tokenPrice * _param1
+  idx = 0
+  while idx < _param1:
+      if tokenByIndex.length > -2:
+          revert with \'NH{q\', 17
+      if tokenByIndex.length < MAX_TOKENS:
+          _107 = mem[64]
+          mem[64] = mem[64] + 32
+          mem[_107] = 0
+          if not caller:
+              revert with 0, \'ERC721: mint to the zero address\'
+          if ownerOf[stor9.length + 1]:
+              revert with 0, \'ERC721: token already minted\'
+          stor10[stor9.length + 1] = tokenByIndex.length
+          tokenByIndex.length++
+          tokenByIndex[tokenByIndex.length] = tokenByIndex.length + 1
+          if caller:
+              tokenOfOwnerByIndex[caller][stor3[caller]] = tokenByIndex.length + 1
+              stor8[stor9.length + 1] = balanceOf[caller]
+              if balanceOf[caller] > -2:
+                  revert with \'NH{q\', 17
+              balanceOf[caller]++
+              mem[0] = tokenByIndex.length + 1
+              mem[32] = 2
+              ownerOf[stor9.length + 1] = caller
+              log Transfer(\n            address from=0,\n            address to=caller,\n            uint256 tokens=tokenByIndex.length + 1)\n              if ext_code.size(caller) > 0:\n                  mem[mem[64]] = 0x150b7a0200000000000000000000000000000000000000000000000000000000\n                  mem[mem[64] + 4] = caller\n                  mem[mem[64] + 36] = 0\n                  mem[mem[64] + 68] = tokenByIndex.length + 1\n                  mem[mem[64] + 100] = 128\n                  mem[mem[64] + 132] = 0\n                  s = 0\n                  while s < 0:\n                      mem[mem[64] + s + 164] = mem[_107 + s + 32]\n                      s = s + 32\n                      continue \n                  require ext_code.size(caller)\n                  call caller.onERC721Received(address operator, address from, uint256 childTokenId, bytes data) with:\n                       gas gas_remaining wei\n                      args caller, 0, tokenByIndex.length + 1, 128, 0\n                  mem[mem[64]] = ext_call.return_data[0]\n                  if not ext_call.success:\n                      if not return_data.size:\n                          if not mem[96]:\n                              revert with 0, \'ERC721: transfer to non ERC721Receiver implementer\'\n                          revert with memory\n                            from 128\n                             len mem[96]\n                      if not return_data.size:\n                          revert with 0, \'ERC721: transfer to non ERC721Receiver implementer\'\n                      revert with ext_call.return

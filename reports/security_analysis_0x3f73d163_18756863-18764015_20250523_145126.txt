@@ -1,0 +1,117 @@
+安全分析报告
+生成时间: 2025-05-23 14:51:26
+目标合约: 0x3f73d163Ef111a198e0076BFE5910B502A77e7dE
+区块范围: 18756863 - 18764015
+分析类型: transaction_analysis
+原始查询: Analyze the behavior of address 0x3f73d163Ef111a198e0076BFE5910B502A77e7dE in 2023-12-11
+
+================================================================================
+
+# Security Incident Analysis Report
+
+## Attack Overview
+
+Based on the available data, the security incident appears to be an exploit targeting the LockToken contract, potentially involving unauthorized withdrawals or manipulation of locked tokens. The high number of ETH transfers to the attacker contract `0x3f73d163Ef111a198e0076BFE5910B502A77e7dE` followed by a large outflow to another address `0xc982543623bbd0d79113f8e24d11cdac765afdd5` strongly suggests an exploit.  The delegatecall in transaction `0x9ccbe4af1456fe0d5622c278b26b0943971f943693586a1923bb528f5d7ad254` from the attacker contract to `0xe2fe530c047f2d85298b07d9333c05737f1435fb` using method `withdrawTokens` further indicates an attempt to drain funds.
+
+## Contract Identification
+
+- Attacker Contract: `0x3f73d163Ef111a198e0076BFE5910B502A77e7dE` - This contract receives ETH from several sources and then sends a large sum to `0xc982543623bbd0d79113f8e24d11cdac765afdd5`, suggesting it's the exploit contract consolidating funds.
+- Victim Contract: `0xe900e6897db0af429bca77277979f4ea07662a2c` - Based on the transaction `0x9ccbe4af1456fe0d5622c278b26b0943971f943693586a1923bb528f5d7ad254`, the attacker contract calls `withdrawTokens` on `0xe2fe530c047f2d85298b07d9333c05737f1435fb`.  `0xe2fe530c047f2d85298b07d9333c05737f1435fb` then uses `delegatecall` on `0xe900e6897db0af429bca77277979f4ea07662a2c`, indicating that `0xe900e6897db0af429bca77277979f4ea07662a2c` is the underlying implementation of the contract with the `withdrawTokens` function, and therefore, the victim contract. This is further supported by the presence of the LockToken code which is `0xe900e6897db0af429bca77277979f4ea07662a2c`.
+- Proxy Contract: `0xe2fe530c047f2d85298b07d9333c05737f1435fb` - The `delegatecall` to the victim contract suggests this is a proxy contract. The presence of the `AdminUpgradeabilityProxy.sol` code further supports this and confirms that `0xe2fe530c047f2d85298b07d9333c05737f1435fb` is a proxy.
+- Helper Contracts: `0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad`, and `0x576466debc41a5c404e225d321070ddd2288e191` - The LockToken code interacts with these.
+
+## Vulnerability Analysis
+
+Based on the provided LockToken code and the `delegatecall` pattern, a likely vulnerability exists in how the `withdrawTokens` function interacts with the proxy contract `0xe2fe530c047f2d85298b07d9333c05737f1435fb`.
+
+The `withdrawTokens` function in `LockToken.sol` has the following structure:
+
+```solidity
+    function withdrawTokens(
+        uint256 _id,
+        uint256 _amount
+    )
+    external
+    nonReentrant
+    {
+        if(nftMinted[_id]) {
+            require(IERC721Extended(NFT).ownerOf(_id) == _msgSender(), "Unauthorised to unlock");
+        }
+        NFTItems memory lockedNFT = lockedNFTs[_id];
+        Items storage lockedERC20 = lockedToken[_id];
+
+        require(
+            (_msgSender() == lockedNFT.withdrawalAddress || _msgSender() == lockedERC20.withdrawalAddress),
+            "Unauthorised to unlock"
+        );
+
+        //amount is ignored for erc-721 locks, in the future if 1155 locks are supported, we need to cater to amount var
+        if(lockedNFT.tokenAddress != address(0x0)) {
+            require(block.timestamp >= lockedNFT.unlockTime, "Unlock time not reached");
+            require(!lockedNFT.withdrawn, "NFT: already withdrawn");
+
+            _removeNFTDeposit(_id);
+
+            if(nftMinted[_id])
+            {
+                nftMinted[_id] = false;
+                IERC721Extended(NFT).burn(_id);
+            }
+
+            // transfer tokens to wallet address
+            IERC721(lockedNFT.tokenAddress).safeTransferFrom(address(this), _msgSender(), lockedNFT.tokenId);
+
+            emit LogNFTWithdrawal(_id, lockedNFT.tokenAddress, lockedNFT.tokenId, _msgSender(), lockedNFT.tokenAmount);
+        }
+        else
+        {
+            require(block.timestamp >= lockedERC20.unlockTime, "Unlock time not reached");
+            require(!lockedERC20.withdrawn, "ERC20: already withdrawn");
+            require(_amount > 0, "ERC20: Cannot Withdraw 0 Tokens");
+            require(lockedERC20.tokenAmount >= _amount, "Insufficent Balance to withdraw");
+
+            //full withdrawl
+            if(lockedERC20.tokenAmount == _amount){
+                _removeERC20Deposit(_id);
+                if (nftMinted[_id]){\
+                    nftMinted[_id] = false;
+                    IERC721Extended(NFT).burn(_id);
+                }
+            }
+            else {
+                //partial withdrawl
+                lockedERC20.tokenAmount = lockedERC20.tokenAmount.sub(_amount);\
+                walletTokenBalance[lockedERC20.tokenAddress][lockedERC20.withdrawalAddress] = \
+                    walletTokenBalance[lockedERC20.tokenAddress][lockedERC20.withdrawalAddress].sub(_amount);
+            }
+            // transfer tokens to wallet address
+            IERC20(lockedERC20.tokenAddress).safeTransfer(_msgSender(), _amount);
+
+            emit LogTokenWithdrawal(_id, lockedERC20.tokenAddress, _msgSender(), _amount);
+        }
+    }
+```
+and the `_removeERC20Deposit` is:
+```solidity
+ function _removeERC20Deposit(
+        uint256 _id
+    )
+    private
+    {
+        Items storage lockedERC20 = lockedToken[_id];
+        //remove entry from lockedToken struct
+        lockedERC20.withdrawn = true;
+                
+        //update balance in address
+        walletTokenBalance[lockedERC20.tokenAddress][lockedERC20.withdrawalAddress] = 
+        walletTokenBalance[lockedERC20.tokenAddress][lockedERC20.withdrawalAddress].sub(lockedERC20.tokenAmount);
+        
+        _removeDepositsForWithdrawalAddress(_id, lockedERC20.withdrawalAddress);
+    }
+```
+
+A potential vulnerability exists in the proxy pattern, specifically within the `withdrawTokens` function. If the proxy contract's storage is not properly initialized or is mishandled, it might be possible to bypass the authorization checks or the `_removeERC20Deposit` function.
+
+The `AdminUpgradeabilityProxy` code shows the standard proxy pattern:
+```solidity
+contract AdminUpgradeabilityProxy is BaseAdminUpgradeabilityProxy, UpgradeabilityProxy {

@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from ethereum.bytecode_fetcher import get_bytecode
 from ethereum.decompiler.gigahorse_wrapper import decompile_bytecode
 from database import get_db
-from database.crud import update_bytecode, update_decompiled_code, get_contract_full_info as db_get_contract_full_info
+from database.crud import update_bytecode, update_decompiled_code, get_contract_full_info
 from database.models import Contract,UserInteraction
 from ethereum.abi_fetcher import get_contract_metadata, process_contract_metadata
 from database.crud import upsert_contract
@@ -165,9 +165,23 @@ class ContractAnalyzer:
             abi = self.get_contract_abi(checksum_address)
             if abi:
                 contract = self.w3.eth.contract(address=checksum_address, abi=abi)
-                for func in contract.functions:
-                    if func.function_signature_hash == selector_with_prefix:
-                        return func.fn_name
+                
+                # 正确处理合约函数
+                for func_name in dir(contract.functions):
+                    if not func_name.startswith('_'):  # 跳过内部方法
+                        try:
+                            # 获取函数对象
+                            func = getattr(contract.functions, func_name)
+                            # 获取函数选择器
+                            function_signature = func.function_identifier
+                            function_selector = Web3.keccak(text=function_signature)[:4].hex()
+                            
+                            # 比较选择器
+                            if '0x' + function_selector == selector_with_prefix:
+                                return func_name
+                        except Exception as e:
+                            # 跳过无法处理的函数
+                            continue
         except Exception as e:
             print(f"从ABI获取方法名称失败: {str(e)}")
         
@@ -1088,9 +1102,6 @@ class ContractAnalyzer:
         """全流程入口（集成原有逻辑）"""
         # 强制使用以太坊网络，忽略传入的network参数
         self.current_network = "ethereum"
-        #print(f"\n=== 网络配置 ===")
-        #print(f"当前网络: ethereum")
-        #print(f"RPC URL: {settings.NETWORKS['ethereum']['rpc_url']}")
         
         # 验证网络连接
         try:
@@ -1127,23 +1138,111 @@ class ContractAnalyzer:
                 print(error_msg)
                 return error_msg
         
+        # 步骤2.5：获取调用图并检查所有相关合约是否有source code
+        print("\n=== 构建交易调用图并检查合约源码 ===")
+        found_empty_source = False
+        contracts_without_source = []
+        
+        # 构建交易调用图
+        call_graph = build_transaction_call_graph(
+            address,
+            start,
+            end,
+            max_depth=3,
+            pruning_enabled=True  # 启用剪枝
+        )
+        
+        # 收集调用图中涉及的所有合约地址
+        all_contract_addresses = set()
+        for tx_hash, data in call_graph.items():
+            all_contract_addresses.update(data['related_contracts'])
+        
+        # 检查每个合约是否有源码
+        print(f"检查 {len(all_contract_addresses)} 个相关合约的源码状态")
+        for contract_addr in all_contract_addresses:
+            try:
+                # 先检查是否是合约（有bytecode）
+                bytecode = self.get_bytecode(contract_addr)
+                is_contract = bytecode and len(bytecode) > 2  # 非空且长度大于2表示有代码
+                
+                if not is_contract:
+                    print(f"地址 {contract_addr} 不是合约（EOA账户），跳过")
+                    continue
+                
+                # 获取合约完整信息
+                contract_data = self.get_contract_full_info(contract_addr)
+                
+                # 检查是否有源码
+                has_source = False
+                if contract_data and contract_data.get('source_code'):
+                    source_code = contract_data.get('source_code')
+                    if isinstance(source_code, str) and source_code.strip() and source_code != '""':
+                        has_source = True
+                    elif isinstance(source_code, dict) and any(source_code.values()):
+                        has_source = True
+                
+                if not has_source:
+                    # 只有当确认是合约且没有源码时，才添加到无源码合约列表
+                    found_empty_source = True
+                    contracts_without_source.append(contract_addr)
+                    print(f"合约 {contract_addr} 没有源码")
+            except Exception as e:
+                print(f"检查合约 {contract_addr} 源码时出错: {str(e)}")
+                # 尝试检查是否有bytecode
+                try:
+                    bytecode = self.get_bytecode(contract_addr)
+                    if bytecode and len(bytecode) > 2:  # 确认是合约
+                        # 保守处理：如果检查出错且确认是合约，默认认为它可能是潜在风险合约
+                        found_empty_source = True
+                        contracts_without_source.append(contract_addr)
+                        print(f"合约 {contract_addr} 检查出错但确认是合约，视为潜在风险")
+                    else:
+                        print(f"地址 {contract_addr} 不是合约或无法获取代码，跳过")
+                except Exception as inner_e:
+                    print(f"获取 {contract_addr} 字节码时出错: {str(inner_e)}")
+                    # 无法确定是否是合约，保守处理
+                    found_empty_source = True
+                    contracts_without_source.append(contract_addr)
+                    print(f"无法确定 {contract_addr} 是否是合约，保守视为潜在风险")
+                    
+        # 显示检查结果
+        if found_empty_source:
+            print(f"\n发现 {len(contracts_without_source)} 个没有源码的合约，将进行安全事件分析")
+            for addr in contracts_without_source:
+                print(f"- {addr}")
+        else:
+            print("\n所有相关合约都有源码，将进行普通转账分析")
+        
         # 步骤3：触发深度分析
         print("\n=== 步骤3：生成深度分析 ===")
-        analysis_result = process_user_query({
-            "contract_address": address,
-            "start_block": start,
-            "end_block": end,
-            "analysis_type": analysis_type,
-            "related_addresses": list(related_addresses),
-            "user_input": user_input,
-            "network": "ethereum"  # 固定为以太坊网络
-        })
+        
+        # 基于源码检查结果选择分析类型
+        if found_empty_source:
+            # 有源码为空的合约，进行安全事件分析
+            analysis_result = process_user_query({
+                "contract_address": address,
+                "start_block": start,
+                "end_block": end,
+                "analysis_type": analysis_type,
+                "related_addresses": list(related_addresses),
+                "user_input": user_input,
+                "network": "ethereum",  # 固定为以太坊网络
+                "contracts_without_source": contracts_without_source  # 传递没有源码的合约列表
+            })
+        else:
+            # 所有合约都有源码，进行普通转账分析
+            from analyze_transfer import analyze_eth_transfers
+            analysis_result = analyze_eth_transfers(
+                from_address=address,
+                start_block=start,
+                end_block=end
+            )
         
         return analysis_result
 
     def get_contract_full_info(self, address):
         """获取合约完整信息"""
-        return db_get_contract_full_info(self.db, address.lower())
+        return get_contract_full_info(self.db, address.lower())
         
     def get_bytecode(self, address):
         """获取合约字节码"""
@@ -1179,11 +1278,27 @@ class ContractAnalyzer:
                     tx_hash=tx_data['tx_hash'],
                     timestamp=tx_data['timestamp'],
                     input_data=tx_data.get('input_data', ''),
-                    network=tx_data.get('network', 'ethereum')
+                    network=tx_data.get('network', 'ethereum'),
+                    # 新增字段
+                    transfer_amount=tx_data.get('transfer_amount', '0'),
+                    token_address=tx_data.get('token_address', None),
+                    is_token_transfer=tx_data.get('is_token_transfer', False)
                 )
                 self.db.add(interaction)
                 self.db.commit()
                 return True
+            else:
+                # 如果记录已存在，但需要更新转账信息
+                if 'transfer_amount' in tx_data or 'token_address' in tx_data or 'is_token_transfer' in tx_data:
+                    if 'transfer_amount' in tx_data:
+                        existing.transfer_amount = tx_data['transfer_amount']
+                    if 'token_address' in tx_data:
+                        existing.token_address = tx_data['token_address']
+                    if 'is_token_transfer' in tx_data:
+                        existing.is_token_transfer = tx_data['is_token_transfer']
+                    self.db.commit()
+                    print(f"更新交易 {tx_data['tx_hash']} 的转账信息")
+                    return True
             return False
         except Exception as e:
             self.db.rollback()

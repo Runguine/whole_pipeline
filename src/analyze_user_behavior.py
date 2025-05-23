@@ -13,6 +13,34 @@ from sqlalchemy.pool import QueuePool
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import and_, or_
+from typing import Dict, List, Any, Set, Union
+
+
+def ensure_json_serializable(obj):
+    """
+    递归地确保对象可以被JSON序列化，主要将set转换为list
+    
+    Args:
+        obj: 任何Python对象
+        
+    Returns:
+        处理后的可JSON序列化对象
+    """
+    if isinstance(obj, set):
+        return [ensure_json_serializable(item) for item in obj]
+    elif isinstance(obj, list):
+        return [ensure_json_serializable(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {key: ensure_json_serializable(value) for key, value in obj.items()}
+    elif isinstance(obj, (str, int, float, bool, type(None))):
+        return obj
+    else:
+        # 尝试转换为字符串
+        try:
+            return str(obj)
+        except:
+            return None
+
 
 # 新增在analyze_user_behavior.py顶部
 USER_QUERY_PROMPT = """
@@ -66,6 +94,9 @@ Based on the provided contract code and transaction data, generate a definitive 
 
 # Detailed Security Analysis  
 {behavior_analysis}
+
+# Contract Creation Information
+{creator_info}
 
 ## CRITICAL ANALYSIS REQUIREMENTS
 
@@ -124,17 +155,87 @@ def parse_user_query(user_input):
 
 def generate_preliminary_analysis(params):
     """生成事件初步分析"""
-    prompt = PRELIMINARY_ANALYSIS_PROMPT.format(
-        event_name=params.get("event_name","未知安全事件"),
-        user_input=params.get("user_input","")
-    )
+    # 如果是转账分析，使用转账专用的提示词
+    if params.get("analysis_type") == "transfer_analysis":
+        prompt = """
+        作为区块链安全分析专家，请针对以下地址的普通转账交易提供初步分析：
+        
+        地址: {target_contract}
+        区块范围: {start_block} - {end_block}
+        原始查询: {user_input}
+        
+        请提供简要的分析，包括：
+        1. 地址的基本情况
+        2. 可能的交易目的（普通转账、交易所存提款等）
+        3. 相关安全建议
+        
+        输出格式：
+        ## 初步分析
+        [分析内容]
+        
+        ## 建议关注点
+        [建议关注的方向]
+        """.format(
+            target_contract=params.get("target_contract", "未知地址"),
+            start_block=params.get("start_block", "未知"),
+            end_block=params.get("end_block", "未知"),
+            user_input=params.get("user_input", "")
+        )
+    else:
+        # 使用原有的安全事件分析提示词
+        prompt = PRELIMINARY_ANALYSIS_PROMPT.format(
+            event_name=params.get("event_name", "未知安全事件"),
+            user_input=params.get("user_input", "")
+        )
+    
     return request_ds(prompt, "")
 
-def generate_final_report(preliminary, behavior, target_contract):
+def generate_final_report(preliminary, behavior, target_contract, creator_info=None):
     """生成最终安全分析报告，整合初步分析和详细行为分析"""
+    # 准备创建者信息部分
+    creator_section = "No creation information available."
+    
+    if creator_info:
+        # 基本创建者信息
+        creator_section = f"""
+Target Contract: `{target_contract}`
+Creator Address: `{creator_info.get('creator_address', 'Unknown')}`
+Creation Transaction: `{creator_info.get('creation_tx_hash', 'Unknown')}`
+Creation Block: {creator_info.get('creation_block', 'Unknown')}
+Source: {creator_info.get('source', 'Unknown')}
+
+IMPORTANT: Analyze the relationship between the creator and the target contract. 
+Consider if the target contract might be:
+1. An attack contract created by a malicious actor
+2. A honeypot or scam token created specifically for a rugpull
+3. A legitimate contract that was later compromised
+"""
+        
+        # 添加置信度说明
+        if creator_info.get('confidence') == 'low':
+            creator_section += "\nNote: This creator information has low confidence and is based on inference rather than direct evidence."
+            
+        # 如果创建者创建了其他合约，添加这些信息
+        other_contracts = creator_info.get('other_contracts', [])
+        if other_contracts:
+            creator_section += "\n\n## Creator's Other Contracts\n\n"
+            creator_section += "The creator has deployed the following other contracts in the analyzed time period:\n\n"
+            
+            for idx, contract in enumerate(other_contracts, 1):
+                creator_section += f"{idx}. Contract Address: `{contract.get('address', 'Unknown')}`\n"
+                creator_section += f"   Creation Transaction: `{contract.get('creation_tx', 'Unknown')}`\n"
+                creator_section += f"   Creation Block: {contract.get('creation_block', 'Unknown')}\n\n"
+            
+            creator_section += "CRITICAL: Analyze these contracts for patterns suggesting a coordinated attack or rugpull scheme. Focus on:\n"
+            creator_section += "- Sequential contract deployment patterns\n"
+            creator_section += "- Similar contract functionality or code patterns\n"
+            creator_section += "- Cross-contract interactions and fund flows\n"
+            creator_section += "- Timing correlation between contract deployments and suspicious transactions\n"
+    
     prompt = FINAL_REPORT_PROMPT.format(
         preliminary_analysis=preliminary,
         behavior_analysis=behavior,
+        creator_info=creator_section,
         target_contract=target_contract
     )
     
@@ -254,45 +355,6 @@ def request_ds(prompt, abi, max_retries=3, retry_delay=2):
 """
     return error_response
 
-# 新增CRUD函数需要添加到crud.py中
-def get_contract_full_info(db: Session, address: str):
-    """
-    获取合约完整信息（包含代理关系）
-    返回数据结构：
-    {
-        "address": str,
-        "is_proxy": bool,
-        "parent_address": str,
-        "source_code": str,
-        "abi": list,
-        "decompiled_code": str
-    }
-    """
-    contract = (
-        db.query(Contract)
-        .filter(Contract.target_contract == address.lower())
-        .first()
-    )
-    if not contract:
-        return None
-    
-    result = {
-        "address": contract.target_contract,
-        "is_proxy": contract.is_proxy,
-        "parent_address": contract.parent_address,
-        "source_code": contract.source_code,
-        "abi": contract.abi,
-        "decompiled_code": contract.decompiled_code
-    }
-    
-    # 递归获取父合约信息
-    if contract.is_proxy and contract.parent_address:
-        parent_info = get_contract_full_info(db, contract.parent_address)
-        if parent_info:
-            result["parent_info"] = parent_info
-    
-    return result
-
 def load_contract_code(db, target_contract):
     """加载合约代码，优先使用源代码，其次是反编译代码"""
     contract_info = get_contract_full_info(db, target_contract)
@@ -320,78 +382,77 @@ def load_contract_code(db, target_contract):
     return None
 
 def generate_code_context(contracts_chain):
-    """生成LLM需要的代码上下文"""
-    context = []
+    """生成代码上下文，格式化合约代码以供分析"""
+    if not contracts_chain:
+        return "无可用合约代码"
     
-    for contract in contracts_chain:
-        code_sections = []
+    code_context = ""
+    for addr, code in contracts_chain.items():
+        # 创建合约标题
+        header = f"合约地址: {addr}"
+        # 检查是否是特殊关注的合约（无源码合约）
+        if code.get('is_priority') or not code.get('source_code'):
+            header += " [需重点关注]"
         
-        # 源码部分
-        source_code = contract.get("source_code", "")
-        if source_code:
-            try:
-                if isinstance(source_code, list) and len(source_code) > 0:
-                    source_code_str = "\n".join([str(item) for item in source_code])
-                elif isinstance(source_code, dict):
-                    source_code_str = json.dumps(source_code, indent=2)
-                else:
-                    source_code_str = str(source_code)
-                    code_sections.append(
-                        f"// 验证源码（{contract['type']}合约 {contract['address']}）\n"
-                                    f"{source_code_str}"
-                    )
-            except Exception as e:
-                print(f"处理源码时出错: {str(e)}")
-                code_sections.append(
-                    f"// 验证源码（{contract['type']}合约 {contract['address']}）\n"
-                    f"// 处理源码时出错: {str(e)}"
-                )
+        code_context += f"\n{'='*80}\n{header}\n{'='*80}\n"
         
-        # 反编译代码
-        decompiled_code = contract.get("decompiled_code", "")
-        if decompiled_code:
-            try:
-                if isinstance(decompiled_code, dict):
-                    decompiled_code_str = json.dumps(decompiled_code, indent=2)
-                elif isinstance(decompiled_code, str) and decompiled_code.strip().startswith('{'):
-                    # 尝试解析JSON字符串
-                    try:
-                        decompiled_json = json.loads(decompiled_code)
-                        decompiled_code_str = json.dumps(decompiled_json, indent=2)
-                    except:
-                        decompiled_code_str = decompiled_code
-                else:
-                    decompiled_code_str = str(decompiled_code)
-                    
-                    code_sections.append(
-                        f"// 反编译代码（{contract['type']}合约 {contract['address']}）\n"
-                                    f"{decompiled_code_str}"
-                    )
-            except Exception as e:
-                print(f"处理反编译代码时出错: {str(e)}")
-                code_sections.append(
-                    f"// 反编译代码（{contract['type']}合约 {contract['address']}）\n"
-                    f"// 处理反编译代码时出错: {str(e)}"
-            )
+        # 添加合约类型信息
+        contract_type = code.get('type', "未知类型")
+        if code.get('is_proxy'):
+            contract_type = "代理合约"
+            if code.get('parent_address'):
+                code_context += f"代理类型: {contract_type}, 指向逻辑合约: {code.get('parent_address')}\n\n"
+        else:
+            code_context += f"合约类型: {contract_type}\n\n"
         
-        # ABI信息
-        abi = contract.get("abi", [])
-        if abi and isinstance(abi, list):
-            try:
-                code_sections.append(
-                    f"// ABI定义（{contract['type']}合约 {contract['address']}）\n"
-                    f"{json.dumps(abi, indent=2)}"
-                )
-            except Exception as e:
-                print(f"处理ABI时出错: {str(e)}")
-                code_sections.append(
-                    f"// ABI定义（{contract['type']}合约 {contract['address']}）\n"
-                    f"// 处理ABI时出错: {str(e)}"
-                )
+        # 添加合约名称（如果有）
+        if code.get('c_name'):
+            code_context += f"合约名称: {code.get('c_name')}\n\n"
         
-        context.append("\n\n".join(code_sections))
+        # 处理源代码
+        has_source = False
+        if code.get('source_code'):
+            src_code = code['source_code']
+            # 处理不同格式的源码
+            if isinstance(src_code, str) and src_code.strip() and src_code != '""':
+                has_source = True
+                code_context += f"## 源代码\n```solidity\n{src_code}\n```\n\n"
+            elif isinstance(src_code, dict) and any(src_code.values()):
+                has_source = True
+                # 如果是多文件合约，逐个显示文件
+                code_context += "## 源代码 (多文件)\n"
+                for filename, content in src_code.items():
+                    if content and isinstance(content, str) and content.strip():
+                        code_context += f"\n### 文件: {filename}\n```solidity\n{content}\n```\n"
+        
+        # 如果没有源码，优先显示反编译代码
+        if not has_source and code.get('decompiled_code'):
+            decompiled = code['decompiled_code']
+            code_context += "## 反编译代码\n"
+            
+            # 处理不同格式的反编译代码
+            if isinstance(decompiled, dict):
+                # 如果是字典格式，可能包含多个函数
+                for func_name, func_code in decompiled.items():
+                    if func_code and isinstance(func_code, str):
+                        code_context += f"\n### 函数: {func_name}\n```\n{func_code}\n```\n"
+                    elif isinstance(func_code, dict):
+                        # 如果函数也是字典结构
+                        code_context += f"\n### 函数: {func_name}\n```\n{json.dumps(func_code, indent=2)}\n```\n"
+            elif isinstance(decompiled, str) and decompiled.strip():
+                code_context += f"```\n{decompiled}\n```\n\n"
+            else:
+                code_context += f"```\n{json.dumps(decompiled, indent=2)}\n```\n\n"
+        
+        # 如果既没有源码也没有反编译代码，显示字节码
+        if not has_source and not code.get('decompiled_code') and code.get('bytecode'):
+            code_context += f"## 字节码\n```\n{code.get('bytecode')[:200]}...(已截断)\n```\n\n"
+        
+        # 如果什么都没有，标记为无可用代码
+        if not has_source and not code.get('decompiled_code') and not code.get('bytecode'):
+            code_context += "无可用代码。这个合约可能需要特别关注，因为无法获取任何代码信息。\n\n"
     
-    return "\n\n" + "="*50 + "\n\n".join(context) + "\n\n" + "="*50
+    return code_context
 
 def analyze_input_data(input_data, abi):
     """分析input_data中的参数，并提取地址"""
@@ -425,7 +486,6 @@ def analyze_input_data(input_data, abi):
         # 如果有ABI，尝试解码
         if abi and isinstance(abi, list) and len(abi) > 0:
             try:
-                # 创建Web3合约对象
                 contract = Web3().eth.contract(abi=abi)
                 
                 # 尝试解码函数输入
@@ -443,8 +503,6 @@ def analyze_input_data(input_data, abi):
                             }
                 except ValueError as e:
                     if "Could not find any function with matching selector" in str(e):
-                        # 这是正常的，意味着ABI中没有匹配的函数
-                        # 继续使用基础解析
                         pass
                     else:
                         print(f"ABI解码失败: {str(e)}")
@@ -454,7 +512,7 @@ def analyze_input_data(input_data, abi):
         # 基础解析
         if isinstance(input_data, str) and input_data.startswith('0x'):
             input_data = input_data[2:]
-    
+        
             method_id = input_data[:8]
             params = []
             data = input_data[8:]
@@ -516,61 +574,140 @@ def process_user_query(params):
         print(f"合约地址: {params['target_contract']}")
         print(f"区块范围: {params['start_block']} - {params['end_block']}")
         
-        # 添加调用链分析
-        call_graph = build_transaction_call_graph(
-            params['target_contract'],
-            params['start_block'],
-            params['end_block'],
-            max_depth=3,
-            pruning_enabled=True  # 启用剪枝
-        )
+        # 提取要重点关注的没有源码的合约
+        contracts_without_source = params.get('contracts_without_source', [])
+        if contracts_without_source:
+            print(f"需要重点关注的无源码合约数量: {len(contracts_without_source)}")
         
-        # 执行Rugpull特征检测
-        print("\n=== 检测Rugpull特征 ===")
-        rugpull_analysis = detect_rugpull_patterns(call_graph, params['target_contract'])
-        if rugpull_analysis["is_likely_rugpull"]:
-            print(f"检测到可能的Rugpull行为，置信度: {rugpull_analysis['confidence']}")
-            for reason in rugpull_analysis["reasons"]:
-                print(f"- {reason}")
-        else:
-            print("未检测到明显的Rugpull特征")
+        # 检查是否需要进行安全事件分析
+        # 新的判断逻辑：如果指定了contracts_without_source，则进行安全事件分析
+        if contracts_without_source:
+            # 步骤1：首先构建初始调用图，仅包含目标合约
+            call_graph = build_transaction_call_graph(
+                params['target_contract'],
+                params['start_block'],
+                params['end_block'],
+                max_depth=3,
+                pruning_enabled=True,  # 启用剪枝
+                related_addresses=params.get('related_addresses', [])  # 传递相关地址
+            )
         
-        # 生成初步分析
-        print("\n=== 生成初步分析 ===")
-        preliminary_analysis = generate_preliminary_analysis(params)
-        
-        # 分析行为
-        print("\n=== 分析合约行为 ===")
-        behavior_analysis = analyze_behavior_new(
-            target_contract=params['target_contract'],
-            start_block=params['start_block'],
-            end_block=params['end_block'],
-            related_addresses=params.get('related_addresses', []),
-            call_graph=call_graph  # 传递调用图给行为分析
-        )
-        
-        # 将rugpull分析结果添加到行为分析中
-        if isinstance(behavior_analysis, dict):
-            behavior_analysis['rugpull_analysis'] = rugpull_analysis
-        
-        # 检查行为分析结果
-        if isinstance(behavior_analysis, str) and '错误' in behavior_analysis:
-            print(f"行为分析失败: {behavior_analysis}")
-            return behavior_analysis
+            # 步骤2：生成初步分析
+            print("\n=== 生成初步分析 ===")
+            preliminary_analysis = generate_preliminary_analysis(params)
             
-        # 生成最终报告
-        print("\n=== 生成最终报告 ===")
-        final_report = generate_final_report(
-            preliminary_analysis, 
-            behavior_analysis,
-            params['target_contract']  # 传入target_contract参数
-        )
-        
-        # 保存报告
-        report_file = save_report(final_report, params)
-        print(f"报告已保存至: {report_file}")
-        
-        return final_report
+            # 步骤3：执行完整的双向行为分析
+            print("\n=== 分析合约行为（包括创建者和相关合约） ===")
+            behavior_analysis = analyze_behavior_new(
+                target_contract=params['target_contract'],
+                start_block=params['start_block'],
+                end_block=params['end_block'],
+                related_addresses=params.get('related_addresses', []),
+                call_graph=call_graph,  # 传递调用图给行为分析
+                contracts_without_source=contracts_without_source  # 传递无源码合约列表
+            )
+            
+            # 步骤4：获取创建者信息和相关合约
+            creator_info = None
+            related_addresses = []
+            creator_contracts = []
+            
+            if isinstance(behavior_analysis, dict):
+                # 提取创建者信息
+                if behavior_analysis.get('creator_info'):
+                    creator_info = behavior_analysis.get('creator_info')
+                    # 将创建者添加到相关地址
+                    if creator_info.get('creator_address'):
+                        related_addresses.append(creator_info.get('creator_address'))
+                
+                # 提取创建者的其他合约
+                if behavior_analysis.get('creator_other_contracts'):
+                    creator_contracts = behavior_analysis.get('creator_other_contracts')
+                    # 将这些合约添加到相关地址
+                    for contract in creator_contracts:
+                        if 'address' in contract:
+                            related_addresses.append(contract['address'])
+                
+                # 提取目标合约创建的合约
+                if behavior_analysis.get('created_contracts'):
+                    for contract in behavior_analysis.get('created_contracts'):
+                        if 'address' in contract:
+                            related_addresses.append(contract['address'])
+            
+            # 步骤5：使用增强的相关地址集合重新构建更完整的调用图
+            if related_addresses:
+                print(f"\n=== 使用创建者及相关合约重新构建完整调用图 ===")
+                print(f"相关地址数量: {len(related_addresses)}")
+                enhanced_call_graph = build_transaction_call_graph(
+                    params['target_contract'],
+                    params['start_block'],
+                    params['end_block'],
+                    max_depth=3,
+                    pruning_enabled=True,
+                    related_addresses=related_addresses
+                )
+                
+                # 更新调用图
+                call_graph = enhanced_call_graph
+                
+                # 更新行为分析中的调用图
+                if isinstance(behavior_analysis, dict):
+                    behavior_analysis['enhanced_call_graph'] = True
+            
+            # 步骤6：现在执行Rugpull特征检测，使用完整的调用图和相关地址信息
+            print("\n=== 检测Rugpull特征 ===")
+            rugpull_analysis = detect_rugpull_patterns(
+                call_graph, 
+                params['target_contract'],
+                creator_info=creator_info,
+                related_addresses=related_addresses
+            )
+            
+            if rugpull_analysis["is_likely_rugpull"]:
+                print(f"检测到可能的Rugpull行为，置信度: {rugpull_analysis['confidence']}")
+                for reason in rugpull_analysis["reasons"]:
+                    print(f"- {reason}")
+            else:
+                print("未检测到明显的Rugpull特征")
+            
+            # 将rugpull分析结果添加到行为分析中
+            if isinstance(behavior_analysis, dict):
+                behavior_analysis['rugpull_analysis'] = rugpull_analysis
+            
+            # 检查行为分析结果
+            if isinstance(behavior_analysis, str) and '错误' in behavior_analysis:
+                print(f"行为分析失败: {behavior_analysis}")
+                return behavior_analysis
+                
+                    # 生成最终报告
+            print("\n=== 生成最终报告 ===")
+            
+            # 获取创建者信息
+            creator_info = None
+            if isinstance(behavior_analysis, dict) and behavior_analysis.get('creator_info'):
+                creator_info = behavior_analysis.get('creator_info')
+            
+            final_report = generate_final_report(
+                preliminary_analysis, 
+                behavior_analysis,
+                params['target_contract'],  # 传入target_contract参数
+                creator_info=creator_info   # 传入创建者信息
+            )
+            
+            # 保存报告
+            report_file = save_report(final_report, params)
+            print(f"报告已保存至: {report_file}")
+            
+            return final_report
+        else:
+            # 如果没有指定特殊合约，直接进入普通转账分析
+            print("未发现无源码合约，转入普通转账分析")
+            from analyze_transfer import analyze_eth_transfers
+            return analyze_eth_transfers(
+                from_address=params['target_contract'],
+                start_block=params['start_block'],
+                end_block=params['end_block']
+            )
         
     except KeyError as ke:
         error_msg = f"缺少必要字段：{str(ke)}"
@@ -619,25 +756,120 @@ def save_report(report_content, params):
     except Exception as e:
         print(f"\n保存报告时出错: {str(e)}")
 
-def analyze_behavior_new(target_contract=None, start_block=None, end_block=None, related_addresses=None, call_graph=None):
+def analyze_behavior_new(target_contract=None, start_block=None, end_block=None, related_addresses=None, call_graph=None, contracts_without_source=None):
     # 输出调试信息
     print(f"开始分析行为，参数：target={target_contract}, start={start_block}, end={end_block}")
     print(f"相关地址数量: {len(related_addresses) if related_addresses else 0}")
+    if contracts_without_source:
+        print(f"待重点分析的无源码合约数量: {len(contracts_without_source)}")
     
     # 获取数据库会话
     db = next(get_db())
     w3 = Web3(Web3.HTTPProvider(settings.NETWORKS["ethereum"]["rpc_url"]))
     
+    # 新增：识别目标合约的创建者
+    creator_info = identify_contract_creator(target_contract)
+    creator_contracts = []  # 存储创建者可能创建的其他合约
+    
+    if creator_info:
+        creator_address = creator_info['creator_address']
+        creation_block = creator_info['creation_block']
+        
+        print(f"\n=== 识别到目标合约的创建者 ===")
+        print(f"创建者地址: {creator_address}")
+        print(f"创建交易: {creator_info['creation_tx_hash']}")
+        print(f"创建区块: {creation_block}")
+        print(f"数据来源: {creator_info['source']}")
+        
+        # 将创建者添加到相关地址中
+        if not related_addresses:
+            related_addresses = []
+        if creator_address not in related_addresses:
+            related_addresses.append(creator_address)
+        
+        # 调整区块范围以包含创建交易
+        if creation_block and (start_block is None or creation_block < start_block):
+            # 向前扩展10个区块，以捕获可能的前置交易
+            adjusted_start = max(1, creation_block - 10)
+            print(f"调整起始区块从 {start_block} 到 {adjusted_start} 以包含创建交易")
+            start_block = adjusted_start
+            
+        # 重要：主动获取创建者在目标时间范围内的所有交易并保存到数据库
+        print(f"\n=== 主动获取创建者 {creator_address} 的交易 ===")
+        tx_count = fetch_related_address_transactions(creator_address, start_block, end_block)
+        print(f"成功获取创建者 {tx_count} 笔交易并保存到数据库，这将使调用图更完整")
+        
+        # 查找创建者在同一时间范围内创建的其他合约
+        try:
+            # 查询该创建者在分析时间段内的所有create交易
+            print(f"\n=== 查找创建者 {creator_address} 创建的其他合约 ===")
+            from sqlalchemy import and_
+            other_creation_txs = db.query(UserInteraction).filter(
+                and_(
+                    UserInteraction.caller_contract == creator_address.lower(),
+                    UserInteraction.method_name == 'create',
+                    UserInteraction.block_number >= start_block,
+                    UserInteraction.block_number <= end_block
+                )
+            ).all()
+            
+            # 记录所有创建的合约
+            for tx in other_creation_txs:
+                if tx.target_contract != target_contract.lower():
+                    creator_contracts.append({
+                        'address': tx.target_contract,
+                        'creation_tx': tx.tx_hash,
+                        'creation_block': tx.block_number
+                    })
+                    # 添加到相关地址
+                    if tx.target_contract not in related_addresses:
+                        related_addresses.append(tx.target_contract)
+                    print(f"发现创建者创建的其他合约: {tx.target_contract}, 交易: {tx.tx_hash}, 区块: {tx.block_number}")
+                    
+                    # 获取该合约的交易数据
+                    other_contract_tx_count = fetch_related_address_transactions(tx.target_contract, start_block, end_block)
+                    print(f"获取创建者创建的合约 {tx.target_contract} 的 {other_contract_tx_count} 笔交易")
+                    
+            if not creator_contracts:
+                print("未发现创建者创建的其他合约")
+        except Exception as e:
+            print(f"查询创建者其他合约时出错: {str(e)}")
+    
+        # 将创建者信息和相关合约添加到分析结果中供后续使用
+        creator_result = {
+            'creator_address': creator_address,
+            'creation_tx_hash': creator_info['creation_tx_hash'],
+            'creation_block': creation_block,
+            'source': creator_info['source'],
+            'other_contracts': creator_contracts
+        }
+        if 'confidence' in creator_info:
+            creator_result['confidence'] = creator_info['confidence']
+    
     try:
         from sqlalchemy import and_, or_
         
+        # 构建包含目标合约和相关地址的查询条件
+        address_conditions = []
+        target_contract_lower = target_contract.lower()
+        
+        # 添加目标合约条件
+        address_conditions.append(UserInteraction.target_contract == target_contract_lower)
+        address_conditions.append(UserInteraction.caller_contract == target_contract_lower)
+        
+        # 如果有相关地址（如创建者），添加相关地址的条件
+        if related_addresses:
+            for addr in related_addresses:
+                if addr and Web3.is_address(addr):
+                    addr_lower = addr.lower()
+                    # 避免重复添加目标合约
+                    if addr_lower != target_contract_lower:
+                        address_conditions.append(UserInteraction.target_contract == addr_lower)
+                        address_conditions.append(UserInteraction.caller_contract == addr_lower)
+                        print(f"添加相关地址 {addr_lower} 到查询条件")
+        
         # 构建基本查询条件
-        query_conditions = [
-            or_(
-                UserInteraction.target_contract == target_contract.lower(),
-                UserInteraction.caller_contract == target_contract.lower()
-            )
-        ]
+        query_conditions = [or_(*address_conditions)]
         
         # 添加区块范围过滤
         if start_block is not None:
@@ -688,6 +920,14 @@ def analyze_behavior_new(target_contract=None, start_block=None, end_block=None,
         if related_addresses:
             all_contracts.update([addr.lower() for addr in related_addresses if Web3.is_address(addr)])
         
+        # 如果有指定无源码合约，将其添加到优先分析列表
+        priority_contracts = []
+        if contracts_without_source:
+            priority_contracts = [addr.lower() for addr in contracts_without_source if Web3.is_address(addr)]
+            print(f"优先分析以下 {len(priority_contracts)} 个无源码合约:")
+            for addr in priority_contracts:
+                print(f"- {addr}")
+        
         # 移除零地址、预编译合约等特殊地址
         special_addresses = {
             '0x0000000000000000000000000000000000000000',
@@ -703,251 +943,90 @@ def analyze_behavior_new(target_contract=None, start_block=None, end_block=None,
         }
         all_contracts = all_contracts - special_addresses
         
-        print(f"去重后需要分析的合约数量: {len(all_contracts)}")
+        # 调整合约分析顺序，优先分析没有源码的合约
+        sorted_contracts = []
         
-        # 创建一个专用的ContractAnalyzer实例用于获取合约元数据
-        from main import ContractAnalyzer
-        analyzer = ContractAnalyzer()
+        # 首先添加无源码优先合约
+        for addr in priority_contracts:
+            if addr in all_contracts:
+                sorted_contracts.append(addr)
         
-        # 收集每个合约的代码
-        contracts_code = {}
-        for contract_addr in all_contracts:
-            try:
-                # 1. 先尝试加载已有代码
-                contract_code = load_contract_code(db, contract_addr)
-                
-                if contract_code:
-                    contracts_code[contract_addr] = contract_code
-                    print(f"已从数据库加载合约 {contract_addr} 的代码")
-                else:
-                    print(f"未找到合约 {contract_addr} 的代码，尝试获取源码")
-                    
-                    # 2. 尝试通过API获取合约源码
-                    try:
-                        # 创建一个ContractPipeline实例
-                        from main import ContractPipeline
-                        pipeline = ContractPipeline(analyzer)
-                        
-                        # 通过pipeline获取合约信息（包括源码）
-                        contract_info = pipeline.process_with_metadata(contract_addr)
-                        
-                        # 重新尝试从数据库加载（应该有了）
-                        contract_code = load_contract_code(db, contract_addr)
-                        if contract_code:
-                            contracts_code[contract_addr] = contract_code
-                            print(f"已成功加载新获取的合约 {contract_addr} 代码")
-                            # 成功获取源码后，继续处理下一个合约
-                            continue
-                        else:
-                            # 如果API获取成功但数据库加载仍然失败，说明有问题
-                            print(f"警告：合约 {contract_addr} 源码已获取但加载失败，检查数据库")
-                    except Exception as e:
-                        print(f"通过API获取合约 {contract_addr} 源码失败: {str(e)}")
-                    
-                    # 3. 只有在无法获取源码的情况下，才尝试反编译字节码
-                    print(f"尝试反编译合约 {contract_addr}")
-                    try:
-                        # 获取字节码
-                        bytecode = analyzer.get_bytecode(contract_addr)
-                        
-                        if bytecode and len(bytecode) > 2:  # 确保不是空字节码
-                            # 反编译
-                            from ethereum.decompiler.gigahorse_wrapper import decompile_bytecode
-                            decompiled_code = decompile_bytecode(bytecode)
-                            
-                            if decompiled_code:
-                                # 保存反编译结果到数据库
-                                from database.crud import update_decompiled_code
-                                update_decompiled_code(db, contract_addr, decompiled_code)
-                                
-                                # 添加到当前分析中
-                                contracts_code[contract_addr] = {
-                                    'decompiled_code': decompiled_code,
-                                    'contract_type': 'decompiled_code'
-                                }
-                                print(f"成功反编译合约 {contract_addr}")
-                            else:
-                                print(f"合约 {contract_addr} 反编译失败")
-                        else:
-                            print(f"合约 {contract_addr} 没有字节码或是EOA账户")
-                    except Exception as e:
-                        print(f"处理合约 {contract_addr} 字节码和反编译时出错: {str(e)}")
-            except Exception as e:
-                print(f"加载合约 {contract_addr} 代码时出错: {str(e)}")
+        # 然后添加其他合约
+        for addr in all_contracts:
+            if addr not in sorted_contracts:
+                sorted_contracts.append(addr)
         
-        print(f"成功加载 {len(contracts_code)} 个合约的代码")
+        # 打印合约分析顺序
+        print("\n合约分析顺序:")
+        for idx, addr in enumerate(sorted_contracts, 1):
+            contract_type = "无源码合约" if addr in priority_contracts else "普通合约"
+            print(f"{idx}. {addr} ({contract_type})")
+        
+        # 获取所有合约的代码（优先使用无源码合约）
+        print("\n获取合约代码...")
+        contracts_chain = extract_contract_codes_from_db(db, sorted_contracts, priority_addresses=priority_contracts)
         
         # 生成代码上下文
-        code_context = ""
-        for addr, code in contracts_code.items():
-            context = f"合约 {addr} 的代码:\n"
-            if isinstance(code, dict):
-                if code.get('source_code'):
-                    # 处理可能的格式化问题
-                    src_code = code['source_code']
-                    if isinstance(src_code, list):
-                        src_code = "\n".join(src_code)
-                    elif isinstance(src_code, dict):
-                        src_code = json.dumps(src_code, indent=2)
-                    
-                    context += f"源代码：\n{src_code}\n\n"
-                elif code.get('decompiled_code'):
-                    # 处理可能的格式化问题
-                    decompiled = code['decompiled_code']
-                    if isinstance(decompiled, dict):
-                        decompiled = json.dumps(decompiled, indent=2)
-                    
-                    context += f"反编译代码：\n{decompiled}\n\n"
-            code_context += context + "\n" + "="*50 + "\n"
+        code_context = generate_code_context(contracts_chain)
         
-        # 统计方法调用频率
-        method_calls = {}
-        for tx in transactions:
-            method_name = getattr(tx, 'method_name', 'unknown')
-            if method_name not in method_calls:
-                method_calls[method_name] = 0
-            method_calls[method_name] += 1
-            
-        # 按频率排序
-        sorted_methods = sorted(method_calls.items(), key=lambda x: x[1], reverse=True)
-        method_list = "\n".join([f"{method}: {count} 次调用" for method, count in sorted_methods])
-        
-        # 识别目标合约创建的合约
-        created_contracts = identify_created_contracts(call_graph, target_contract)
-        has_created_contracts = bool(created_contracts)
-        
-        if has_created_contracts:
-            print(f"发现目标合约创建的合约: {len(created_contracts)} 个")
-            for idx, contract in enumerate(created_contracts, 1):
-                print(f"{idx}. 合约地址: {contract['address']}")
-                print(f"   创建交易: {contract['tx_hash']}")
-            
-            # 确定优先分析的合约地址
-            priority_addresses = [contract['address'] for contract in created_contracts]
-        else:
-            priority_addresses = []
-        
-        # 分析调用模式
+        # 分析调用路径模式
+        print("\n分析调用模式...")
         call_patterns = analyze_call_patterns(call_graph, target_contract)
         
-        # 转换调用模式为文本格式
-        if isinstance(call_patterns, dict):
-            call_patterns_text = json.dumps(call_patterns, indent=2)
-        elif isinstance(call_patterns, str):
-            call_patterns_text = call_patterns
-        else:
-            call_patterns_text = "No specific call patterns detected"
-        
-        # 分析复杂交易
-        transactions = get_transactions_for_analysis(db, target_contract)
-        complex_transactions = analyze_complex_transactions(transactions, call_graph)
-        
-        # 提取合约代码，优先处理目标创建的合约
-        contracts_info = extract_contract_codes_from_db(
-            db, 
-            list(related_addresses), 
-            priority_addresses
-        )
-        
-        # 生成合约代码上下文
-        code_context = generate_code_context(contracts_info)
-        
-        # 添加一个突出的注释提醒LLM这是攻击者合约地址
-        attacker_reminder = """
-## IMPORTANT: ATTACKER-VICTIM CLARIFICATION
-The target address provided is likely the ATTACKER'S contract or exploit address, NOT the victim contract.
-You must first analyze the transaction flow to identify which contract was actually exploited.
-Look for contracts that lost value, showed unusual behavior, or were targeted repeatedly.
-"""
-        
-        # 修改基本提示以包含关于攻击者/受害者关系的信息
-        basic_prompt = BEHAVIOR_PROMPT.format(
-            code_context=code_context,
-            method_list=method_list,
-            target_contract=target_contract + " (likely attacker contract)",
-            block_range=f"{start_block}-{end_block}",
-            related_contracts=", ".join(list(all_contracts)[:50]),
-            call_patterns=call_patterns_text
-        )
-        
-        basic_prompt = attacker_reminder + basic_prompt
-        
-        # 修改增强的安全分析提示以强调受害者识别
-        enhanced_prompt = build_enhanced_security_prompt(
-            call_graph, 
-            target_contract,
-            complex_transactions,
-            created_contracts
-        )
-        
-        # 确保增强的安全分析生成的报告明确识别受害者合约
-        enhanced_report = request_ds(enhanced_prompt, "")
-        
-        # 当生成最终报告时，强调受害者识别的重要性
-        final_prompt = FINAL_REPORT_PROMPT.format(
-            preliminary_analysis=basic_prompt,
-            behavior_analysis=enhanced_report,
-            target_contract=target_contract  # 添加这一行
-        )
-        
-        # 添加对调用图中价值流转的强调，帮助识别受害者
-        value_flow_summary = ""
-        for tx_hash, tx_data in call_graph.items():
-            # 构建简单的价值流转摘要
-            high_value_transfers = find_high_value_transfers(tx_data['call_hierarchy'])
-            if high_value_transfers:
-                value_flow_summary += f"\nTransaction {tx_hash} value flows:\n"
-                for transfer in high_value_transfers:
-                    # 检查键名并使用正确的键访问值
-                    if 'value_eth' in transfer:
-                        value = transfer['value_eth']
-                    elif 'value' in transfer:
-                        # 如果值是16进制字符串，转换为浮点数（以太）
-                        value_str = transfer['value']
-                        if isinstance(value_str, str) and value_str.startswith('0x'):
-                            value = int(value_str, 16) / 10**18  # 转换为ETH
-                        else:
-                            value = float(value_str) / 10**18 if isinstance(value_str, (int, float)) else 0
-                    else:
-                        value = 0
-                    
-                    # 使用处理后的值
-                    value_flow_summary += f"- {value:.6f} ETH from {transfer['from']} to {transfer['to']}\n"
-        
-        final_prompt += f"\n\n## Value Flow Analysis (Help Identify Victim)\n{value_flow_summary}\n"
-        
-        # 添加代码上下文到最终prompt
-        final_prompt += f"\n\n## Available Contract Code\n\n{code_context}\n"
-        
-        final_report = request_ds(final_prompt, "")
-        
-        # 保存结果
-        filename = f"report_{target_contract or 'all'}.md"
-        with open(filename, "w") as f:
-            f.write(final_report)
-        
-        print(f"分析报告已生成：{filename}")
-        
-        # 构建返回结果
-        behavior_data = {
-            "target_contract": target_contract,
-            "block_range": f"{start_block}-{end_block}",
-            "related_contracts": list(all_contracts),
-            "code_context": code_context,
-            "method_list": method_list,
-            "call_patterns": call_patterns,
-            "created_contracts": created_contracts if has_created_contracts else [],
-            "basic_report": basic_prompt,
-            "enhanced_report": enhanced_report,
-            "final_report": final_report
+        # 跟踪分析进度
+        print("\n构建交易调用信息...")
+        call_data = {
+            'call_patterns': call_patterns,
+            'code_context': code_context
         }
         
+        # 增强安全分析
+        print("\n生成增强安全分析...")
+        enhanced_security_prompt = build_enhanced_security_prompt(
+            call_graph, 
+            target_contract,
+            created_contracts=identify_created_contracts(call_graph, target_contract)
+        )
+        
+        if enhanced_security_prompt:
+            call_data['enhanced_security_analysis'] = request_ds(enhanced_security_prompt, "")
+            
+        # 添加攻击链分析
+        print("\n构建攻击链分析...")
+        behavior_data = enhance_behavior_analysis_with_attack_chain(call_data, call_graph, target_contract)
+        
+        # 更新行为分析以包含代码分析
+        print("\n整合代码分析结果...")
+        behavior_data = update_behavior_analysis_with_code(behavior_data, call_graph, target_contract)
+        
+        # 如果有优先合约（无源码合约），在分析中特别标注
+        if priority_contracts:
+            if isinstance(behavior_data, dict):
+                behavior_data['suspicious_contracts'] = priority_contracts
+                behavior_data['has_suspicious_contracts'] = True
+                # 添加特别提示
+                behavior_data['warning'] = "警告：在交易调用图中发现了未验证源码的合约，这些合约可能存在安全风险。"
+            elif isinstance(behavior_data, str):
+                behavior_data += "\n\n**警告**：在分析的交易中涉及了未验证源码的合约，这些合约可能存在安全风险。"
+        
+        # 保存合约创建者信息（如果有）
+        if creator_info and isinstance(behavior_data, dict):
+            behavior_data['creator_info'] = creator_result  # 使用包含其他合约的增强版创建者信息
+            
+            # 如果发现创建者创建的其他合约，添加到分析结果中
+            if creator_contracts:
+                behavior_data['creator_other_contracts'] = creator_contracts
+                print(f"已将创建者创建的 {len(creator_contracts)} 个其他合约添加到分析结果中")
+        
+        # 确保所有数据可以被JSON序列化
+        behavior_data = ensure_json_serializable(behavior_data)
         return behavior_data
         
     except Exception as e:
-        print(f"处理交易数据时出错: {str(e)}")
+        error_msg = f"分析行为时出错: {str(e)}"
+        print(error_msg)
         traceback.print_exc()
-        return f"在处理您的查询时遇到了错误：{str(e)}"
+        return f"### 分析过程出错\n\n{error_msg}"
 
 def analyze_call_patterns(call_graph, target_contract):
     """
@@ -992,6 +1071,9 @@ def analyze_call_patterns(call_graph, target_contract):
     
     # 转换为列表以便JSON序列化
     patterns['suspicious_contracts'] = list(patterns['suspicious_contracts'])
+    
+    # 确保所有数据可以被JSON序列化
+    patterns = ensure_json_serializable(patterns)
     return patterns
 
 def find_circular_paths(call_hierarchy):
@@ -1353,7 +1435,7 @@ def _get_transaction_trace_alternative(tx_hash, network="ethereum"):
 
 def extract_addresses_from_trace(trace_data):
     """从交易追踪数据中提取所有相关合约地址"""
-    addresses = set()
+    addresses = set()  # 注意：返回前会转换为list
     
     print("="*50)
     print("开始处理trace数据")
@@ -1724,8 +1806,8 @@ def process_old_format_trace(trace, parent_node, related_contracts, call_path, c
         import traceback
         traceback.print_exc()
 
-def build_transaction_call_graph(target_contract, start_block, end_block, max_depth=3, pruning_enabled=True):
-    """构建交易调用图"""
+def build_transaction_call_graph(target_contract, start_block, end_block, max_depth=3, pruning_enabled=True, related_addresses=None):
+    """构建交易调用图，包括目标合约和相关地址（如创建者）的交易"""
     db = next(get_db())
     w3 = Web3(Web3.HTTPProvider(settings.NETWORKS["ethereum"]["rpc_url"]))
     
@@ -1733,21 +1815,37 @@ def build_transaction_call_graph(target_contract, start_block, end_block, max_de
     call_graph = {}
     processed_txs = set()  # 初始化已处理交易集合
     
+    # 处理相关地址列表
+    if related_addresses is None:
+        related_addresses = []
+    
+    # 确保地址格式正确，并转为小写
+    related_addresses_lower = [addr.lower() for addr in related_addresses if Web3.is_address(addr)]
+    
+    # 将目标合约也添加到相关地址列表
+    all_addresses = [target_contract_lower] + related_addresses_lower
+    print(f"构建调用图，包括目标合约和 {len(related_addresses_lower)} 个相关地址")
+    
     try:
         from sqlalchemy import and_, or_
         
-        # 更新查询条件，查找所有可能与目标合约相关的交易
+        # 构建包含所有相关地址的查询条件
+        address_conditions = []
+        for addr in all_addresses:
+            address_conditions.append(UserInteraction.target_contract == addr)
+            address_conditions.append(UserInteraction.caller_contract == addr)
+            # 包括method_name为'create'的交易(合约创建)
+            address_conditions.append(
+                and_(
+                    UserInteraction.method_name == 'create',
+                    UserInteraction.caller_contract == addr
+                )
+            )
+        
+        # 更新查询条件，查找所有可能与目标合约及相关地址相关的交易
         interactions = db.query(UserInteraction).filter(
             and_(
-                or_(
-                    UserInteraction.target_contract == target_contract_lower,
-                    UserInteraction.caller_contract == target_contract_lower,
-                    # 包括method_name为'create'的交易(合约创建)
-                    and_(
-                        UserInteraction.method_name == 'create',
-                        UserInteraction.caller_contract == target_contract_lower
-                    )
-                ),
+                or_(*address_conditions),
                 UserInteraction.block_number >= start_block,
                 UserInteraction.block_number <= end_block
             )
@@ -1826,6 +1924,8 @@ def build_transaction_call_graph(target_contract, start_block, end_block, max_de
                 print(f"交易 {tx_hash} 没有trace数据")
         
         print(f"交易调用图构建完成，共包含 {len(call_graph)} 笔交易，涉及 {len(all_related_addresses)} 个相关合约")
+        # 确保所有数据可以被JSON序列化
+        call_graph = ensure_json_serializable(call_graph)
         return call_graph
         
     except Exception as e:
@@ -2571,43 +2671,158 @@ def enhance_behavior_analysis_with_attack_chain(behavior_data, call_graph, targe
     return behavior_data
 
 def extract_contract_codes_from_db(db, contract_addresses, priority_addresses=None):
-    """增强版合约代码提取，支持优先级合约"""
-    if priority_addresses is None:
-        priority_addresses = []
+    """从数据库中提取合约代码，并根据优先级排序"""
+    if not contract_addresses:
+        return {}
     
-    # 确保优先地址格式统一
-    priority_addresses = [addr.lower() for addr in priority_addresses if addr]
+    print(f"从数据库提取 {len(contract_addresses)} 个合约的代码")
     
-    # 将优先地址添加到合约地址列表开头
-    for addr in reversed(priority_addresses):
-        if addr in contract_addresses:
-            contract_addresses.remove(addr)
-        contract_addresses.insert(0, addr)
+    # 确保地址列表唯一性
+    contract_addresses = list(set(contract_addresses))
     
-    contracts_info = []
-    for address in contract_addresses:
-        contract = get_contract_full_info(db, address)
-        if contract:
-            # 标记该合约是否为优先分析对象
-            is_priority = address.lower() in [addr.lower() for addr in priority_addresses]
+    # 如果提供了优先地址，将其移到列表前面
+    if priority_addresses:
+        # 建立一个新的排序列表
+        sorted_addresses = []
+        # 优先添加priority_addresses中的地址
+        for addr in priority_addresses:
+            if addr in contract_addresses:
+                sorted_addresses.append(addr)
+                print(f"优先处理合约: {addr}")
+        # 添加剩余的地址
+        for addr in contract_addresses:
+            if addr not in sorted_addresses:
+                sorted_addresses.append(addr)
+        # 替换原始列表
+        contract_addresses = sorted_addresses
+    
+    contracts_code = {}
+    
+    # 创建一个专用的ContractAnalyzer实例用于获取合约元数据
+    from main import ContractAnalyzer
+    analyzer = ContractAnalyzer()
+    
+    # 创建一个ContractPipeline实例
+    from main import ContractPipeline
+    pipeline = ContractPipeline(analyzer)
+    
+    # 收集每个合约的代码
+    for idx, contract_addr in enumerate(contract_addresses, 1):
+        is_priority = priority_addresses and contract_addr in priority_addresses
+        priority_tag = "[优先]" if is_priority else ""
+        print(f"提取合约代码 ({idx}/{len(contract_addresses)}) {priority_tag}: {contract_addr}")
+        
+        try:
+            # 0. 先验证是否为合约（有bytecode）
+            bytecode = analyzer.get_bytecode(contract_addr)
+            if not bytecode or len(bytecode) <= 2:  # 非合约地址
+                print(f"  地址 {contract_addr} 不是合约（可能是EOA账户），跳过")
+                continue
+                
+            # 1. 尝试加载已有代码
+            contract_info = get_contract_full_info(db, contract_addr)
             
-            # 添加合约类型标签
-            contract_type = "未知"
-            if contract.get('is_proxy'):
-                contract_type = "代理合约"
-            elif address.lower() == contract_addresses[0].lower():
-                contract_type = "目标合约"
-            elif is_priority:
-                contract_type = "目标创建的合约" if address in priority_addresses else "关键合约"
+            if contract_info:
+                contracts_code[contract_addr] = contract_info
+                # 检查是否有源码
+                has_source = False
+                if contract_info.get('source_code'):
+                    source_code = contract_info.get('source_code')
+                    if isinstance(source_code, str) and source_code.strip() and source_code != '""':
+                        has_source = True
+                        print(f"  已从数据库加载合约源码")
+                    elif isinstance(source_code, dict) and any(source_code.values()):
+                        has_source = True
+                        print(f"  已从数据库加载合约源码 (JSON格式)")
+                
+                # 检查是否有反编译代码
+                has_decompiled = False
+                if contract_info.get('decompiled_code'):
+                    has_decompiled = True
+                    print(f"  已从数据库加载反编译代码")
+                
+                # 如果既没有源码也没有反编译代码，标记为需要进一步处理
+                if not has_source and not has_decompiled:
+                    print(f"  合约信息存在但无源码或反编译代码，尝试获取")
+                else:
+                    # 如果有源码或反编译代码，跳过后续处理
+                    continue
             
-            # 确保合约有类型字段
-            contract['type'] = contract.get('type', contract_type)
-            if is_priority:
-                contract['is_priority'] = True
+            # 2. 如果没有找到代码或代码不完整，尝试通过API获取合约源码
+            print(f"  尝试通过API获取合约源码")
+            try:
+                # 通过pipeline获取合约信息（包括源码）
+                contract_info = pipeline.process_with_metadata(contract_addr)
+                
+                # 重新尝试从数据库加载（应该有了）
+                updated_info = get_contract_full_info(db, contract_addr)
+                if updated_info:
+                    contracts_code[contract_addr] = updated_info
+                    # 检查是否获取到了源码
+                    if updated_info.get('source_code'):
+                        source_code = updated_info.get('source_code')
+                        if isinstance(source_code, str) and source_code.strip() and source_code != '""':
+                            print(f"  成功获取合约源码")
+                            # 成功获取源码后，继续处理下一个合约
+                            continue
+                        elif isinstance(source_code, dict) and any(source_code.values()):
+                            print(f"  成功获取合约源码 (JSON格式)")
+                            # 成功获取源码后，继续处理下一个合约
+                            continue
+                    
+                    print(f"  合约源码获取失败或为空")
+                else:
+                    print(f"  无法从数据库加载更新后的合约信息")
+            except Exception as e:
+                print(f"  通过API获取合约源码失败: {str(e)}")
             
-            contracts_info.append(contract)
+            # 3. 如果无法获取源码，尝试反编译字节码
+            print(f"  尝试反编译合约字节码")
+            try:
+                # 已经有bytecode了，直接使用
+                if bytecode and len(bytecode) > 2:  # 确保不是空字节码
+                    print(f"  成功获取字节码，长度: {len(bytecode)}")
+                    
+                    # 反编译
+                    from ethereum.decompiler.gigahorse_wrapper import decompile_bytecode
+                    decompiled_code = decompile_bytecode(bytecode)
+                    
+                    if decompiled_code:
+                        # 保存反编译结果到数据库
+                        from database.crud import update_decompiled_code
+                        update_decompiled_code(db, contract_addr, decompiled_code)
+                        
+                        # 重新获取更新后的合约信息
+                        updated_info = get_contract_full_info(db, contract_addr)
+                        if updated_info:
+                            contracts_code[contract_addr] = updated_info
+                            print(f"  成功反编译合约，并更新数据库")
+                        else:
+                            # 手动构建代码信息
+                            contracts_code[contract_addr] = {
+                                'target_contract': contract_addr,
+                                'decompiled_code': decompiled_code,
+                                'bytecode': bytecode
+                            }
+                            print(f"  成功反编译合约，但数据库未更新")
+                    else:
+                        print(f"  反编译失败，无法获取反编译代码")
+                else:
+                    print(f"  合约没有字节码或字节码为空")
+            except Exception as e:
+                print(f"  反编译过程出错: {str(e)}")
+                traceback.print_exc()
+                
+        except Exception as e:
+            print(f"  处理合约代码时出错: {str(e)}")
     
-    return contracts_info
+    # 添加标记，指示哪些合约是优先处理的
+    for addr in contracts_code:
+        if priority_addresses and addr in priority_addresses:
+            contracts_code[addr]['is_priority'] = True
+    
+    print(f"成功加载 {len(contracts_code)} 个合约的代码信息")
+    return contracts_code
 
 def build_enhanced_security_prompt(call_graph, target_contract, complex_txs=None, created_contracts=None):
     """构建增强的安全分析提示，聚焦攻击链分析"""
@@ -2809,6 +3024,12 @@ def update_behavior_analysis_with_code(behavior_data, call_graph, target_contrac
             created_addresses = [contract['address'] for contract in created_contracts]
             print(f"将重点分析以下创建的合约: {', '.join(created_addresses)}")
             
+            # 主动获取被创建合约的交易数据
+            print("\n=== 获取目标合约创建的其他合约的交易 ===")
+            for contract_addr in created_addresses:
+                created_tx_count = fetch_related_address_transactions(contract_addr, start_block, end_block)
+                print(f"获取目标合约创建的合约 {contract_addr} 的 {created_tx_count} 笔交易")
+            
             # 获取创建的合约的代码
             created_contracts_info = []
             for addr in created_addresses:
@@ -2824,6 +3045,29 @@ def update_behavior_analysis_with_code(behavior_data, call_graph, target_contrac
             
             # 添加到behavior_data
             behavior_data['created_contracts_code'] = created_code_context
+            
+        # 如果在分析过程中发现创建者的其他合约，也将其添加到分析结果
+        if isinstance(behavior_data, dict) and behavior_data.get('creator_other_contracts'):
+            creator_other_contracts = behavior_data['creator_other_contracts']
+            print(f"\n=== 分析创建者创建的其他合约 ===")
+            
+            # 获取创建者创建的其他合约代码
+            other_contracts_info = []
+            other_addresses = [contract['address'] for contract in creator_other_contracts]
+            
+            for addr in other_addresses:
+                contract_code = load_contract_code(db, addr)
+                if contract_code:
+                    contract_code['type'] = '创建者创建的其他合约'
+                    contract_code['address'] = addr
+                    other_contracts_info.append(contract_code)
+                    print(f"已加载创建者其他合约 {addr} 的代码")
+            
+            # 生成创建者其他合约的代码上下文
+            if other_contracts_info:
+                other_code_context = generate_code_context(other_contracts_info)
+                behavior_data['creator_other_contracts_code'] = other_code_context
+                print(f"已添加 {len(other_contracts_info)} 个创建者其他合约的代码到分析结果中")
             
             # 为了确保安全分析重点关注被创建的合约，我们把它添加到prompt中
             enhanced_prompt = f"""
@@ -2937,6 +3181,11 @@ def identify_created_contracts(call_graph, target_contract):
         )
     ).all()
     
+    print(f"找到与目标合约 {target_contract_lower} 相关的交易 {len(transactions)} 笔")
+    
+    # 创建合约相关的方法名关键词
+    creation_method_keywords = ["create", "deploy", "new", "build", "spawn", "clone", "factory"]
+    
     # 检查每个交易的trace数据
     for tx in transactions:
         if not tx.trace_data:
@@ -2945,33 +3194,163 @@ def identify_created_contracts(call_graph, target_contract):
         try:
             trace_data = json.loads(tx.trace_data)
             
-            # 处理单个trace对象
-            if isinstance(trace_data, dict):
-                if trace_data.get('type') == 'create' and trace_data.get('action', {}).get('from', '').lower() == target_contract_lower:
-                    # 从result.address获取创建的合约地址
-                    created_address = trace_data.get('result', {}).get('address')
-                    if created_address:
-                        created_contracts.append({
-                            'address': created_address.lower(),
-                            'creator': target_contract_lower,
-                            'tx_hash': tx.tx_hash,
-                            'block_number': tx.block_number
-                        })
-                        print(f"在交易 {tx.tx_hash} 中找到目标合约创建的合约: {created_address}")
+            # 递归处理trace数据查找创建合约的操作
+            def process_trace_recursively(trace_item, parent_from=None, depth=0):
+                """递归处理trace数据查找创建合约的操作"""
+                # 防止过深递归
+                if depth > 8:
+                    return
             
-            # 处理trace列表
-            elif isinstance(trace_data, list):
-                for item in trace_data:
-                    if isinstance(item, dict) and item.get('type') == 'create' and item.get('action', {}).get('from', '').lower() == target_contract_lower:
-                        created_address = item.get('result', {}).get('address')
+            # 处理单个trace对象
+                if isinstance(trace_item, dict):
+                    # 检查是否是create类型
+                    trace_type = trace_item.get('type', '')
+                    
+                    # 获取action和result信息
+                    action = trace_item.get('action', {})
+                    result = trace_item.get('result', {})
+                    
+                    # 获取from地址
+                    from_address = action.get('from', '')
+                    if not from_address and parent_from:
+                        from_address = parent_from
+                    
+                    from_address = from_address.lower() if from_address else ''
+                    
+                    # 检查是否是create类型且from是目标合约
+                    is_create = trace_type.lower() == 'create'
+                    
+                    if is_create and from_address == target_contract_lower:
+                        created_address = None
+                        if result and 'address' in result:
+                            created_address = result.get('address')
                         if created_address:
                             created_contracts.append({
                                 'address': created_address.lower(),
                                 'creator': target_contract_lower,
                                 'tx_hash': tx.tx_hash,
-                                'block_number': tx.block_number
+                                'block_number': tx.block_number,
+                                'creation_type': 'direct_create'
                             })
-                            print(f"在交易 {tx.tx_hash} 中找到目标合约创建的合约: {created_address}")
+                            print(f"在交易 {tx.tx_hash} 中找到目标合约直接创建的合约: {created_address}")
+                    
+                    # 检查是否通过method创建合约
+                    # 获取方法ID/名称
+                    method_id = ''
+                    if action.get('input'):
+                        input_data = action.get('input')
+                        if isinstance(input_data, str) and len(input_data) >= 10:
+                            method_id = input_data[:10].lower()
+                    
+                    method_name = tx.method_name.lower() if tx.method_name else ''
+                    
+                    # 如果from是目标合约且方法名包含创建关键词
+                    if from_address == target_contract_lower and any(keyword in method_name for keyword in creation_method_keywords):
+                        # 尝试从result中找出创建的合约地址
+                        created_address = None
+                        if 'address' in result:
+                            created_address = result.get('address')
+                        if created_address:
+                            created_contracts.append({
+                                'address': created_address.lower(),
+                                'creator': target_contract_lower,
+                                'tx_hash': tx.tx_hash,
+                                'block_number': tx.block_number,
+                                'creation_type': 'method_create'
+                            })
+                            print(f"在交易 {tx.tx_hash} 方法{method_name}中找到创建的合约: {created_address}")
+                    
+                    # 递归处理子调用
+                    # 检查多种可能的子调用结构
+                    if 'calls' in trace_item and isinstance(trace_item['calls'], list):
+                        for subcall in trace_item['calls']:
+                            process_trace_recursively(subcall, from_address, depth + 1)
+                    
+                    if 'subtraces' in trace_item and trace_item['subtraces'] > 0:
+                        if 'trace' in trace_item and isinstance(trace_item['trace'], list):
+                            for subtrace in trace_item['trace']:
+                                process_trace_recursively(subtrace, from_address, depth + 1)
+                    
+                    if 'children' in trace_item and isinstance(trace_item['children'], list):
+                        for child in trace_item['children']:
+                            process_trace_recursively(child, from_address, depth + 1)
+                
+                # 处理trace列表
+                elif isinstance(trace_item, list):
+                    for item in trace_item:
+                        process_trace_recursively(item, parent_from, depth)
+            
+            # 处理trace数据
+            process_trace_recursively(trace_data)
+            
+            # 检查事件日志中的合约创建
+            if tx.event_logs:
+                try:
+                    event_logs = json.loads(tx.event_logs) if isinstance(tx.event_logs, str) else tx.event_logs
+                    
+                    for log in event_logs:
+                        # 检查是否是来自目标合约的事件
+                        if log.get('address', '').lower() == target_contract_lower:
+                            # 提取事件主题
+                            topics = log.get('topics', [])
+                            
+                            # 典型的合约创建事件主题
+                            creation_topics = [
+                                # 常见合约创建事件的签名
+                                "0xbc7cd75a20ee27fd9adebab32041f755214dbc6bffa90cc0225b39da2e5c2d3b",  # Created
+                                "0x4db17dd5e4732fb6da34a148104a592783ca119a1e7bb8829eba6cbadef0b511",  # ProxyCreated
+                                "0x2f8788117e7eff1d82e926ec794901d17c78024a50270940304540a733656f0d"   # RoleGranted (通常在创建后授权)
+                            ]
+                            
+                            if topics and any(topic in str(topics) for topic in creation_topics):
+                                # 从事件数据中提取合约地址
+                                data = log.get('data', '')
+                                if isinstance(data, str) and len(data) >= 42:
+                                    # 尝试从数据中提取地址
+                                    import re
+                                    address_pattern = re.compile(r'0x[a-fA-F0-9]{40}')
+                                    matches = address_pattern.findall(data)
+                                    
+                                    for addr in matches:
+                                        created_contracts.append({
+                                            'address': addr.lower(),
+                                            'creator': target_contract_lower,
+                                            'tx_hash': tx.tx_hash,
+                                            'block_number': tx.block_number,
+                                            'creation_type': 'event_create'
+                                        })
+                                        print(f"从事件日志中检测到创建的合约: {addr}")
+                
+                except Exception as e:
+                    print(f"处理交易 {tx.tx_hash} 的事件日志时出错: {str(e)}")
+            
+            # 如果caller是目标合约，检查交易收据中的合约创建
+            if tx.caller_contract == target_contract_lower:
+                try:
+                    method_name = tx.method_name.lower() if tx.method_name else ''
+                    
+                    # 如果方法名包含创建关键词，进一步检查
+                    if any(keyword in method_name for keyword in creation_method_keywords):
+                        # 查询交易收据以获取contractAddress
+                        try:
+                            w3 = Web3(Web3.HTTPProvider(settings.NETWORKS["ethereum"]["rpc_url"]))
+                            receipt = w3.eth.get_transaction_receipt(tx.tx_hash)
+                            
+                            if receipt and receipt.get('contractAddress'):
+                                created_address = receipt['contractAddress']
+                                created_contracts.append({
+                                    'address': created_address.lower(),
+                                    'creator': target_contract_lower,
+                                    'tx_hash': tx.tx_hash,
+                                    'block_number': tx.block_number,
+                                    'creation_type': 'receipt_create'
+                                })
+                                print(f"从交易收据中检测到创建的合约: {created_address}")
+                        except Exception as e:
+                            print(f"获取交易 {tx.tx_hash} 收据时出错: {str(e)}")
+                except Exception as e:
+                    print(f"处理交易 {tx.tx_hash} input时出错: {str(e)}")
+                    
         except Exception as e:
             print(f"处理交易 {tx.tx_hash} 的trace数据时出错: {str(e)}")
     
@@ -2987,26 +3366,53 @@ def identify_created_contracts(call_graph, target_contract):
     for idx, contract in enumerate(unique_contracts, 1):
         print(f"{idx}. 合约地址: {contract['address']}")
         print(f"   创建交易: {contract['tx_hash']}")
+        print(f"   创建类型: {contract['creation_type']}")
     
-    return unique_contracts
+    # 验证这些合约确实存在（有字节码）
+    verified_contracts = []
+    for contract in unique_contracts:
+        address = contract['address']
+        try:
+            # 检查地址是否有字节码
+            w3 = Web3(Web3.HTTPProvider(settings.NETWORKS["ethereum"]["rpc_url"]))
+            code = w3.eth.get_code(Web3.to_checksum_address(address))
+            
+            if code and code != '0x' and len(code) > 2:
+                verified_contracts.append(contract)
+                print(f"已验证合约 {address} 存在有效代码")
+            else:
+                print(f"警告: 合约 {address} 没有代码，可能是普通账户或已自毁合约")
+        except Exception as e:
+            print(f"验证合约 {address} 时出错: {str(e)}")
+    
+    print(f"最终验证的合约数: {len(verified_contracts)}/{len(unique_contracts)}")
+    return verified_contracts
 
-def detect_rugpull_patterns(call_graph, target_contract):
+def detect_rugpull_patterns(call_graph, target_contract, creator_info=None, related_addresses=None):
     """
-    在交易调用图中检测Rugpull特征
+    在交易调用图中检测Rugpull特征，特别关注代币部署者/owner与资金转出的关联性
     
     Args:
         call_graph (dict): 交易调用图
         target_contract (str): 目标合约地址
+        creator_info (dict, optional): 合约创建者信息
+        related_addresses (list, optional): 相关地址列表，包括创建者地址和创建者的其他合约
         
     Returns:
         dict: Rugpull分析结果
     """
     rugpull_indicators = {
-        "liquidity_removal": [],      # 流动性突然减少
+        "liquidity_removal": [],      # 1. 流动性突然减少
         "privilege_abuse": [],        # 权限滥用
-        "exchange_transfers": [],     # 向交易所的大额转账
+        "exchange_transfers": [],     # 2. 向交易所的大额转账(创建者资金转移)
         "suspicious_functions": [],   # 可疑函数调用
-        "parameter_changes": []       # 关键参数变更
+        "parameter_changes": [],      # 关键参数变更
+        "price_volatility": [],       # 3. 代币价格暴涨暴跌
+        "trade_imbalance": [],        # 4. 买入者远多于卖出者
+        "failed_transactions": [],    # 5. 买入后无法卖出(交易失败)
+        "suspicious_contracts": [],   # 6. 合约没有公开源码或调用异常
+        "short_lifecycle": None,      # 7. 上线时间短
+        "creator_funds_outflow": []   # 8. 新增: 合约创建者/owner资金外流
     }
     
     # 常见交易所地址
@@ -3035,131 +3441,580 @@ def detect_rugpull_patterns(call_graph, target_contract):
         "0x53d284357ec70ce289d6d64134dfac8e511c8a3d": "Kraken",
     }
     
-    # 可疑函数名称
+    # 跨链桥地址
+    bridge_addresses = {
+        "0x40ec5b33f54e0e8a33a975908c5ba1c14e5bbbdf": "Polygon Bridge",
+        "0x99c9fc46f92e8a1c0dec1b1747d010903e884be1": "Optimism Bridge",
+        "0x8ece0a50a025a7e13398212a5bed2ded11959949": "Arbitrum Bridge",
+        "0x3ee18b2214aff97000d974cf647e7c347e8fa585": "Wormhole Bridge",
+        "0x0ac2d6f5f5afc669d3ca38f830dad2b4f238ad3f": "Hop Protocol",
+        "0xabea9132b05a70803a4e85094fd0e1800777fbef": "zkSync Bridge"
+    }
+    
+    # 常见DEX和流动性池相关合约
+    dex_addresses = {
+        "0x7a250d5630b4cf539739df2c5dacb4c659f2488d": "Uniswap V2 Router",
+        "0xe592427a0aece92de3edee1f18e0157c05861564": "Uniswap V3 Router",
+        "0xd9e1ce17f2641f24ae83637ab66a2cca9c378b9f": "SushiSwap Router",
+        "0x1111111254fb6c44bac0bed2854e76f90643097d": "1inch Router",
+        "0xdef1c0ded9bec7f1a1670819833240f027b25eff": "0x Router"
+    }
+    
+    # 可疑函数名称模式
     suspicious_functions = [
         "removeLiquidity", "withdraw", "emergencyWithdraw", "setFee", "updateFee",
         "transferOwnership", "renounceOwnership", "pause", "unpause", "mint",
-        "burn", "blacklist", "setTaxFee", "excludeFromFee", "setMaxTxAmount"
+        "burn", "blacklist", "setTaxFee", "excludeFromFee", "setMaxTxAmount",
+        "addToBlacklist", "removeFromBlacklist", "whitelist", "changeTransferLimit",
+        "updateBlacklist", "disableTrading", "lockTokens", "enableSwap", "disableSwap",
+        "setMaxWallet", "setSwapAndLiquify", "updateMigrator", "setMigrator", "migrateTokens"
     ]
     
-    # 分析每个交易
-    for tx_hash, data in call_graph.items():
-        call_hierarchy = data.get('call_hierarchy', {})
+    # 获取数据库连接以便查询合约创建者和owner
+    db = next(get_db())
+    
+    # 尝试识别合约创建者和owner地址
+    creator_addresses = set()
+    owner_addresses = set()
+    
+    # 使用提供的创建者信息增强分析
+    if creator_info and creator_info.get('creator_address'):
+        creator_address = creator_info.get('creator_address').lower()
+        creator_addresses.add(creator_address)
+        print(f"从创建者信息中添加创建者地址: {creator_address}")
         
-        # 检查大额价值转移
-        def check_value_transfers(node, path=None):
-            if path is None:
-                path = []
+        # 检查创建者的其他合约
+        other_contracts = creator_info.get('other_contracts', [])
+        if other_contracts:
+            print(f"分析创建者部署的 {len(other_contracts)} 个其他合约")
+            for contract in other_contracts:
+                if contract.get('address'):
+                    print(f"添加创建者的其他合约: {contract.get('address')}")
+    
+    # 使用提供的相关地址增强分析
+    if related_addresses:
+        print(f"分析 {len(related_addresses)} 个相关地址的行为")
+        
+    # 交易统计变量初始化
+    total_txs = 0
+    buy_txs = 0
+    sell_txs = 0
+    tx_timestamps = []
+    
+    # 多合约协同行为分析
+    cross_contract_transfers = []  # 记录合约间的资金转移
+    contract_creation_sequence = []  # 记录合约创建顺序
+    contract_similarity = {}  # 记录合约间的相似性
+    
+    # 1. 查询创建交易以识别创建者
+    try:
+        from sqlalchemy import and_
+        creation_txs = db.query(UserInteraction).filter(
+            and_(
+                UserInteraction.target_contract == target_contract.lower(),
+                UserInteraction.method_name == 'create'
+            )
+        ).all()
+        
+        for tx in creation_txs:
+            if tx.caller_contract:
+                creator_addresses.add(tx.caller_contract.lower())
+                print(f"识别到合约创建者地址: {tx.caller_contract}")
+    except Exception as e:
+        print(f"查询合约创建者时出错: {str(e)}")
+    
+    # 2. 在调用图中查找owner相关调用
+    for tx_hash, data in call_graph.items():
+        if 'call_hierarchy' not in data:
+            continue
             
-            current_path = path + [node]
-            
-            # 检查当前节点是否包含价值转移
-            if node.get('value') and node.get('value') != '0x0' and node.get('value') != '0':
-                try:
-                    value_wei = int(node['value'], 16) if isinstance(node['value'], str) and node['value'].startswith('0x') else int(node['value'])
-                    value_eth = value_wei / 10**18
-                    
-                    # 检查是否是大额转账（大于1 ETH）
-                    if value_eth > 1.0:
-                        # 检查接收方是否是交易所地址
-                        to_address = node.get('to', '').lower()
-                        from_address = node.get('from', '').lower()
-                        
-                        # 检查向交易所的转账
-                        if to_address in exchange_addresses:
-                            rugpull_indicators["exchange_transfers"].append({
-                                'tx_hash': tx_hash,
-                                'from': from_address,
-                                'to': to_address,
-                                'exchange': exchange_addresses[to_address],
-                                'value_eth': value_eth
-                            })
-                        
-                        # 检查从流动性池的大额提款
-                        # 注意：这需要更精确的标识，但我们可以通过方法名和大额转账的组合来推断
-                        method = node.get('method_id', node.get('method', '')).lower()
-                        if any(key in method for key in ["remove", "withdraw", "exit"]):
-                            rugpull_indicators["liquidity_removal"].append({
-                                'tx_hash': tx_hash,
-                                'from': from_address,
-                                'to': to_address,
-                                'method': method,
-                                'value_eth': value_eth
-                            })
-                except Exception as e:
-                    print(f"解析价值转移时出错: {str(e)}")
-            
-            # 检查特权函数调用
+        def find_owner_calls(node):
             method = node.get('method_id', node.get('method', '')).lower()
-            for sus_func in suspicious_functions:
-                if sus_func.lower() in method:
-                    rugpull_indicators["suspicious_functions"].append({
-                        'tx_hash': tx_hash,
-                        'from': node.get('from', ''),
-                        'to': node.get('to', ''),
-                        'method': method
-                    })
-                    
-                    # 如果是设置参数类型的函数，标记为参数修改
-                    if any(param in method.lower() for param in ["set", "update", "change", "modify"]):
-                        rugpull_indicators["parameter_changes"].append({
-                            'tx_hash': tx_hash,
-                            'from': node.get('from', ''),
-                            'to': node.get('to', ''),
-                            'method': method
-                        })
-                    break
             
-            # 检查是否是特权操作
-            if node.get('from', '').lower() == target_contract.lower():
-                # 目标合约发起的特权操作
-                if any(key in method.lower() for key in ["owner", "admin", "auth", "manage"]):
-                    rugpull_indicators["privilege_abuse"].append({
-                        'tx_hash': tx_hash,
-                        'from': node.get('from', ''),
-                        'to': node.get('to', ''),
-                        'method': method
-                    })
+            # 检查是否与所有权相关的函数
+            if any(kw in method.lower() for kw in ['owner', 'admin', 'auth', 'onlyowner']):
+                from_addr = node.get('from', '').lower()
+                if from_addr and from_addr != target_contract.lower():
+                    owner_addresses.add(from_addr)
+                    print(f"可能的合约owner地址: {from_addr}")
             
-            # 递归检查子调用
+            # 递归处理子调用
             for child in node.get('children', []):
-                check_value_transfers(child, current_path)
+                find_owner_calls(child)
         
         # 从根节点开始分析
-        check_value_transfers(call_hierarchy)
+        if 'call_hierarchy' in data:
+            find_owner_calls(data['call_hierarchy'])
+            total_txs += 1  # 增加交易计数
+            
+            # 检测买入卖出交易
+            def analyze_transaction_type(node):
+                method = node.get('method_id', node.get('method', '')).lower()
+                from_addr = node.get('from', '').lower()
+                to_addr = node.get('to', '').lower()
+                value = node.get('value', '0x0')
+                
+                # 计算转账价值（如果有）
+                eth_value = 0
+                if value and value != '0x0':
+                    try:
+                        value_int = int(value, 16) if value.startswith('0x') else int(value)
+                        eth_value = value_int / 10**18  # 转换为ETH
+                    except:
+                        pass
+                
+                # 判断是否是买入交易
+                if any(buy_term in method.lower() for buy_term in ['buy', 'swap', 'purchase']):
+                    nonlocal buy_txs
+                    buy_txs += 1
+                
+                # 判断是否是卖出交易
+                elif any(sell_term in method.lower() for sell_term in ['sell', 'withdraw', 'remove']):
+                    nonlocal sell_txs
+                    sell_txs += 1
+                
+                # 检测流动性移除
+                if any(term in method.lower() for term in ['removeliquidity', 'withdraw']) and eth_value > 0.1:
+                    # 检查是否由创建者执行
+                    is_creator = from_addr in creator_addresses
+                    
+                    rugpull_indicators['liquidity_removal'].append({
+                        'tx_hash': tx_hash,
+                        'from': from_addr,
+                        'to': to_addr,
+                        'method': method,
+                        'value_eth': eth_value,
+                        'is_creator': is_creator
+                    })
+                    
+                    print(f"检测到流动性移除: {eth_value} ETH, 交易: {tx_hash}")
+                
+                # 检测向交易所的转账
+                if eth_value > 0.5:  # 超过0.5 ETH的转账
+                    # 检查目标地址是否是交易所
+                    to_addr_lower = to_addr.lower()
+                    if to_addr_lower in exchange_addresses:
+                        # 检查是否由创建者执行
+                        is_creator = from_addr in creator_addresses
+                        
+                        rugpull_indicators['exchange_transfers'].append({
+                            'tx_hash': tx_hash,
+                            'from': from_addr,
+                            'to': to_addr,
+                            'exchange': exchange_addresses[to_addr_lower],
+                            'value_eth': eth_value,
+                            'is_creator': is_creator
+                        })
+                        
+                        print(f"检测到向交易所转账: {eth_value} ETH 到 {exchange_addresses[to_addr_lower]}")
+                
+                # 检查可疑函数调用
+                for sus_func in suspicious_functions:
+                    if sus_func.lower() in method.lower():
+                        rugpull_indicators['suspicious_functions'].append({
+                            'tx_hash': tx_hash,
+                            'from': from_addr,
+                            'to': to_addr,
+                            'method': method
+                        })
+                        print(f"检测到可疑函数调用: {method}")
+                        break
+                
+                # 检查创建者相关行为
+                if from_addr in creator_addresses:
+                    # 记录创建者操作，特别关注向交易所转账、移除流动性等操作
+                    if eth_value > 0.05:  # 超过0.05 ETH的转账
+                        rugpull_indicators['creator_funds_outflow'].append({
+                            'tx_hash': tx_hash,
+                            'from': from_addr,
+                            'to': to_addr,
+                            'value_eth': eth_value,
+                            'method': method
+                        })
+                        print(f"检测到创建者资金流出: {eth_value} ETH, 从 {from_addr} 到 {to_addr}")
+                
+                # 检查合约间交互，特别是在相关合约之间
+                if related_addresses and from_addr in related_addresses and to_addr in related_addresses:
+                    cross_contract_transfers.append({
+                        'tx_hash': tx_hash,
+                        'from': from_addr,
+                        'to': to_addr,
+                        'value_eth': eth_value,
+                        'method': method
+                    })
+                    print(f"检测到相关合约间交互: {from_addr} -> {to_addr}, 方法: {method}")
+                
+                # 递归检查子交易
+                for child in node.get('children', []):
+                    analyze_transaction_type(child)
+            
+            # 分析交易类型
+            analyze_transaction_type(data['call_hierarchy'])
+            
+            # 记录交易时间戳（如果有）
+            if 'timestamp' in data:
+                tx_timestamps.append(data['timestamp'])
     
-    # 计算rugpull分数（简单启发式评分）
+    # 分析交易结构失衡
+    if total_txs > 0:
+        buy_percentage = (buy_txs / total_txs) * 100
+        sell_percentage = (sell_txs / total_txs) * 100
+        
+        # 计算买入卖出比例失衡程度
+        if buy_txs > 0 and sell_txs > 0:
+            buy_sell_ratio = buy_txs / sell_txs
+        else:
+            buy_sell_ratio = buy_txs if sell_txs == 0 else 0
+        
+        # 记录交易结构失衡指标
+        rugpull_indicators["trade_imbalance"] = {
+            'buy_txs': buy_txs,
+            'sell_txs': sell_txs,
+            'total_txs': total_txs,
+            'buy_percentage': buy_percentage,
+            'sell_percentage': sell_percentage,
+            'buy_sell_ratio': buy_sell_ratio,
+            'is_imbalanced': buy_sell_ratio > 3  # 买入是卖出的3倍以上视为失衡
+        }
+    
+    # 分析时间序列以检测短生命周期
+    if tx_timestamps and len(tx_timestamps) > 1:
+        tx_timestamps.sort()
+        first_tx = tx_timestamps[0]
+        last_tx = tx_timestamps[-1]
+        lifecycle_days = (last_tx - first_tx) / (24 * 3600)  # 转换为天数
+        
+        rugpull_indicators["short_lifecycle"] = {
+            'first_tx_time': first_tx,
+            'last_tx_time': last_tx,
+            'lifecycle_days': lifecycle_days,
+            'is_short': lifecycle_days < 7  # 少于7天视为短生命周期
+        }
+    
+    # 计算rugpull分数（扩展启发式评分）
     score = 0
     reasons = []
     
+    # 1. 流动性突然减少
     if len(rugpull_indicators["liquidity_removal"]) > 0:
-        score += 30
-        reasons.append(f"发现{len(rugpull_indicators['liquidity_removal'])}次大额流动性移除")
+        weight = 30
+        # 如果这些操作是由创建者执行的，增加权重
+        creator_removals = len([r for r in rugpull_indicators["liquidity_removal"] if r.get('is_creator', False)])
+        if creator_removals > 0:
+            weight += 10
+            reasons.append(f"发现{creator_removals}次由创建者执行的大额流动性移除")
+        else:
+            reasons.append(f"发现{len(rugpull_indicators['liquidity_removal'])}次大额流动性移除")
+        score += weight
     
+    # 2. 向交易所的大额转账
     if len(rugpull_indicators["exchange_transfers"]) > 0:
-        score += 25
-        reasons.append(f"发现{len(rugpull_indicators['exchange_transfers'])}次向交易所的大额转账")
+        weight = 25
+        # 如果这些转账是由创建者执行的，增加权重
+        creator_transfers = len([t for t in rugpull_indicators["exchange_transfers"] if t.get('is_creator', False)])
+        if creator_transfers > 0:
+            weight += 10
+            reasons.append(f"发现{creator_transfers}次由创建者执行的向交易所的大额转账")
+        else:
+            reasons.append(f"发现{len(rugpull_indicators['exchange_transfers'])}次向交易所的大额转账")
+        score += weight
     
+    # 3. 特权操作
     if len(rugpull_indicators["privilege_abuse"]) > 0:
         score += 20
         reasons.append(f"发现{len(rugpull_indicators['privilege_abuse'])}次特权操作")
     
+    # 4. 可疑函数调用
     if len(rugpull_indicators["suspicious_functions"]) > 0:
         score += 15
         reasons.append(f"发现{len(rugpull_indicators['suspicious_functions'])}次可疑函数调用")
     
+    # 5. 关键参数变更
     if len(rugpull_indicators["parameter_changes"]) > 0:
         score += 10
         reasons.append(f"发现{len(rugpull_indicators['parameter_changes'])}次关键参数变更")
     
-    # 返回分析结果
+    # 6. 交易结构失衡
+    if rugpull_indicators["trade_imbalance"] and rugpull_indicators["trade_imbalance"].get('is_imbalanced'):
+        imbalance = rugpull_indicators["trade_imbalance"]
+        score += 15
+        reasons.append(f"交易结构严重失衡: 买入{imbalance['buy_txs']}次vs卖出{imbalance['sell_txs']}次，比例{imbalance['buy_sell_ratio']:.2f}")
+    
+    # 7. 短生命周期
+    if rugpull_indicators["short_lifecycle"] and rugpull_indicators["short_lifecycle"].get('is_short'):
+        lifecycle = rugpull_indicators["short_lifecycle"]
+        score += 20
+        reasons.append(f"项目生命周期很短: {lifecycle['lifecycle_days']:.2f}天")
+    
+    # 8. 多次交易失败
+    if len(rugpull_indicators["failed_transactions"]) > 5:  # 多于5次交易失败视为异常
+        fail_ratio = len(rugpull_indicators["failed_transactions"]) / total_txs if total_txs > 0 else 0
+        if fail_ratio > 0.1:  # 失败率超过10%
+            score += 15
+            reasons.append(f"高交易失败率: {len(rugpull_indicators['failed_transactions'])}次失败，占比{fail_ratio:.2%}")
+    
+    # 9. 存在可疑未开源合约
+    if len(rugpull_indicators["suspicious_contracts"]) > 0:
+        score += 20
+        reasons.append(f"发现{len(rugpull_indicators['suspicious_contracts'])}个无源码可疑合约")
+    
+    # 10. 创建者资金流出 (新增)
+    if len(rugpull_indicators["creator_funds_outflow"]) > 0:
+        total_outflow = sum(flow.get('value_eth', 0) for flow in rugpull_indicators["creator_funds_outflow"])
+        if total_outflow > 1.0:  # 超过1 ETH的总流出
+            weight = min(int(total_outflow * 5), 40)  # 根据流出量计算权重，最大40分
+            score += weight
+            reasons.append(f"发现创建者大额资金流出: 总计{total_outflow:.2f} ETH")
+    
+    # 11. 分析多合约协同模式 (新增)
+    if cross_contract_transfers and len(cross_contract_transfers) > 2:
+        score += 15
+        reasons.append(f"发现{len(cross_contract_transfers)}次相关合约之间的可疑资金转移")
+    
+    # 12. 综合分析创建者模式 (新增)
+    if creator_info and creator_info.get('other_contracts') and len(creator_info.get('other_contracts')) > 1:
+        # 创建者创建了多个合约，这可能是复杂Rugpull的迹象
+        score += 10
+        reasons.append(f"创建者在短时间内部署了多个相关合约({len(creator_info.get('other_contracts'))}个)")
+    
+    # 返回分析结果，包含新增的指标
     return {
         "indicators": rugpull_indicators,
         "score": score,
         "reasons": reasons,
+        "cross_contract_transfers": cross_contract_transfers,  # 新增跨合约交互数据
         "is_likely_rugpull": score > 50,  # 分数超过50，可能是rugpull
-        "confidence": "高" if score > 70 else "中" if score > 50 else "低"
+        "confidence": "高" if score > 70 else "中" if score > 50 else "低",
+        "multi_contract_pattern": bool(cross_contract_transfers)  # 是否存在多合约协同模式
     }
+
+def identify_contract_creator(target_contract):
+    """
+    识别目标合约的创建者，并返回创建者地址及创建交易详情
+    
+    Args:
+        target_contract (str): 目标合约地址
+        
+    Returns:
+        dict: 包含创建者信息的字典，如果找不到则返回None
+    """
+    db = next(get_db())
+    w3 = Web3(Web3.HTTPProvider(settings.NETWORKS["ethereum"]["rpc_url"]))
+    creator_info = None
+    
+    try:
+        # 检查目标合约地址格式
+        if not Web3.is_address(target_contract):
+            print(f"无效的合约地址: {target_contract}")
+            return None
+        
+        target_contract_lower = target_contract.lower()
+        
+        # 方法1：查询数据库中是否有合约创建交易的记录
+        from sqlalchemy import and_
+        creation_tx = db.query(UserInteraction).filter(
+            and_(
+                UserInteraction.target_contract == target_contract_lower,
+                UserInteraction.method_name == 'create'
+            )
+        ).first()
+        
+        if creation_tx:
+            creator_address = creation_tx.caller_contract
+            creation_block = creation_tx.block_number
+            print(f"从数据库找到合约创建者: {creator_address}, 创建区块: {creation_block}")
+            return {
+                'creator_address': creator_address,
+                'creation_tx_hash': creation_tx.tx_hash,
+                'creation_block': creation_block,
+                'source': 'database'
+            }
+        
+        # 方法2：通过API查询合约创建信息
+        try:
+            # 获取首个区块的交易，通常是创建交易
+            code = w3.eth.get_code(Web3.to_checksum_address(target_contract))
+            if code and len(code) > 2:  # 确认是合约
+                # 通过Etherscan API查询合约创建信息
+                network_config = settings.NETWORKS["ethereum"]
+                url = f"{network_config['explorer_url']}?module=contract&action=getcontractcreation&contractaddresses={target_contract}&apikey={network_config['explorer_key']}"
+                
+                response = requests.get(url)
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get('status') == '1' and data.get('result'):
+                        result = data['result'][0]
+                        creator_address = result.get('contractCreator')
+                        tx_hash = result.get('txHash')
+                        
+                        # 获取交易所在的区块
+                        tx_data = w3.eth.get_transaction(tx_hash)
+                        block_number = tx_data.get('blockNumber')
+                        
+                        print(f"通过API找到合约创建者: {creator_address}, 创建区块: {block_number}")
+                        return {
+                            'creator_address': creator_address,
+                            'creation_tx_hash': tx_hash,
+                            'creation_block': block_number,
+                            'source': 'api'
+                        }
+        except Exception as e:
+            print(f"通过API查询合约创建者出错: {str(e)}")
+        
+        # 方法3：尝试通过链上数据找出最早的交易
+        try:
+            # 查询与该合约相关的最早交易
+            earliest_tx = db.query(UserInteraction).filter(
+                or_(
+                    UserInteraction.target_contract == target_contract_lower,
+                    UserInteraction.caller_contract == target_contract_lower
+                )
+            ).order_by(UserInteraction.block_number).first()
+            
+            if earliest_tx:
+                # 如果最早的交易是对这个合约的调用，创建者可能是调用者
+                if earliest_tx.target_contract == target_contract_lower:
+                    creator_address = earliest_tx.caller_contract
+                    creation_block = earliest_tx.block_number
+                    print(f"推测合约创建者(基于最早交易): {creator_address}, 创建区块: {creation_block}")
+                    return {
+                        'creator_address': creator_address,
+                        'creation_tx_hash': earliest_tx.tx_hash,
+                        'creation_block': creation_block,
+                        'source': 'earliest_tx',
+                        'confidence': 'low'  # 置信度低，因为这只是推测
+                    }
+        except Exception as e:
+            print(f"查询最早交易时出错: {str(e)}")
+        
+        print(f"无法确定合约 {target_contract} 的创建者")
+        return None
+        
+    except Exception as e:
+        print(f"识别合约创建者时出错: {str(e)}")
+        return None
+
+def fetch_related_address_transactions(address, start_block, end_block):
+    """
+    主动获取相关地址(如创建者)在指定区块范围内的所有交易，并保存到数据库
+    
+    Args:
+        address (str): 要查询的地址
+        start_block (int): 起始区块
+        end_block (int): 结束区块
+    
+    Returns:
+        int: 获取并保存的交易数量
+    """
+    if not Web3.is_address(address):
+        print(f"无效的地址: {address}")
+        return 0
+        
+    db = next(get_db())
+    w3 = Web3(Web3.HTTPProvider(settings.NETWORKS["ethereum"]["rpc_url"]))
+    address_lower = address.lower()
+    tx_count = 0
+    
+    try:
+        print(f"获取地址 {address} 在区块 {start_block} 到 {end_block} 范围内的交易...")
+        
+        # 获取地址作为发送方的交易
+        for block_num in range(start_block, end_block + 1):
+            try:
+                # 获取区块
+                block = w3.eth.get_block(block_num, full_transactions=True)
+                
+                # 遍历区块中的所有交易
+                for tx in block.transactions:
+                    tx_hash = tx.hash.hex()
+                    from_address = tx['from'].lower()
+                    to_address = tx['to'].lower() if tx['to'] else None
+                    
+                    # 检查交易是否与目标地址相关
+                    if from_address == address_lower or to_address == address_lower:
+                        # 检查交易是否已存在于数据库
+                        existing_tx = db.query(UserInteraction).filter(
+                            UserInteraction.tx_hash == tx_hash
+                        ).first()
+                        
+                        if not existing_tx:
+                            # 获取交易细节并保存到数据库
+                            tx_data = {
+                                'tx_hash': tx_hash,
+                                'block_number': block_num,
+                                'from_address': from_address,
+                                'to_address': to_address,
+                                'value': tx['value'],
+                                'input_data': tx['input'],
+                                'target_contract': to_address,
+                                'caller_contract': from_address,
+                                'method_name': '未知',  # 稍后会尝试解析
+                                'network': 'ethereum'
+                            }
+                            
+                            # 获取交易追踪数据
+                            trace_data = get_transaction_trace(tx_hash)
+                            if trace_data:
+                                tx_data['trace_data'] = json.dumps(trace_data)
+                                
+                                # 提取地址
+                                extracted_addresses = extract_addresses_from_trace(trace_data)
+                                if extracted_addresses:
+                                    # 确保提取的地址是可序列化的列表而不是集合
+                                    extracted_addresses = ensure_json_serializable(extracted_addresses)
+                            
+                            # 尝试解析方法名
+                            if to_address and tx['input'] and len(tx['input']) >= 10:
+                                try:
+                                    # 获取合约实例
+                                    contract_code = w3.eth.get_code(Web3.to_checksum_address(to_address))
+                                    if contract_code and len(contract_code) > 2:  # 确认是合约地址
+                                        # 修复：创建ContractAnalyzer实例后调用其方法
+                                        from main import ContractAnalyzer
+                                        analyzer = ContractAnalyzer()
+                                        method_name = analyzer.get_method_name(to_address, tx['input'])
+                                        if method_name:
+                                            tx_data['method_name'] = method_name
+                                except Exception as e:
+                                    print(f"解析方法名出错: {str(e)}")
+                            
+                            # 检查是否是合约创建交易
+                            if not to_address and tx['input']:
+                                tx_data['method_name'] = 'create'
+                                # 从交易收据中获取创建的合约地址
+                                receipt = w3.eth.get_transaction_receipt(tx_hash)
+                                if receipt and receipt.get('contractAddress'):
+                                    tx_data['target_contract'] = receipt['contractAddress'].lower()
+                            
+                            # 创建UserInteraction对象并保存
+                            interaction = UserInteraction(
+                                tx_hash=tx_data['tx_hash'],
+                                block_number=tx_data['block_number'],
+                                target_contract=tx_data['target_contract'],
+                                caller_contract=tx_data['caller_contract'],
+                                method_name=tx_data['method_name'],
+                                input_data=tx_data['input_data'],
+                                trace_data=tx_data.get('trace_data'),
+                                network=tx_data['network']
+                                # 移除不支持的字段 extracted_addresses
+                            )
+                            
+                            db.add(interaction)
+                            db.commit()
+                            tx_count += 1
+                            print(f"保存地址 {address} 的交易: {tx_hash}, 方法: {tx_data['method_name']}")
+            
+            except Exception as e:
+                print(f"处理区块 {block_num} 时出错: {str(e)}")
+                continue
+        
+        print(f"成功获取并保存地址 {address} 的 {tx_count} 笔交易")
+        return tx_count
+    
+    except Exception as e:
+        print(f"获取地址 {address} 的交易时出错: {str(e)}")
+        traceback.print_exc()
+        return 0
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--query":

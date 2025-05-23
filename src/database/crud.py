@@ -2,6 +2,9 @@ from sqlalchemy.orm import Session
 from .models import Contract,UserInteraction
 
 from sqlalchemy import desc
+import time
+from datetime import datetime
+import traceback
 
 def upsert_contract(db: Session, contract_data: dict):
     """增强版插入/更新合约数据（新增decompiled_code处理）"""
@@ -179,3 +182,68 @@ def update_contract_type(db: Session, address: str, contract_type: str):
         contract.type = contract_type
         db.commit()
     return contract
+
+def save_interaction(self, tx_data):
+    """
+    保存用户交互数据到数据库
+    
+    Args:
+        tx_data: 包含交易数据的字典
+        
+    Returns:
+        添加的记录ID
+    """
+    db = next(get_db())
+    
+    try:
+        # 检查是否已存在
+        existing = db.query(UserInteraction).filter(
+            UserInteraction.tx_hash == tx_data['tx_hash']
+        ).first()
+        
+        if existing:
+            # 更新现有记录
+            existing.input_data = tx_data.get('input_data', existing.input_data)
+            existing.event_logs = tx_data.get('event_logs', existing.event_logs)
+            
+            # 如果有trace数据，更新
+            if 'trace_data' in tx_data:
+                existing.trace_data = tx_data['trace_data']
+                
+            # 更新新增字段（如果有）
+            if 'transfer_amount' in tx_data:
+                existing.transfer_amount = tx_data['transfer_amount']
+            if 'token_address' in tx_data:
+                existing.token_address = tx_data['token_address']
+            if 'is_token_transfer' in tx_data:
+                existing.is_token_transfer = tx_data['is_token_transfer']
+                
+            db.add(existing)
+            db.commit()
+            return existing.id
+        else:
+            # 创建新记录
+            interaction = UserInteraction(
+                target_contract=tx_data['target_contract'].lower(),
+                caller_contract=tx_data['caller_contract'].lower(),
+                method_name=tx_data['method_name'],
+                block_number=tx_data['block_number'],
+                tx_hash=tx_data['tx_hash'],
+                timestamp=datetime.fromtimestamp(tx_data.get('timestamp', int(time.time()))),
+                input_data=tx_data.get('input_data', ''),
+                event_logs=tx_data.get('event_logs', None),
+                trace_data=tx_data.get('trace_data', None),
+                network=tx_data.get('network', 'ethereum'),
+                transfer_amount=tx_data.get('transfer_amount', None),
+                token_address=tx_data.get('token_address', None),
+                is_token_transfer=tx_data.get('is_token_transfer', False)
+            )
+            db.add(interaction)
+            db.commit()
+            return interaction.id
+            
+    except Exception as e:
+        db.rollback()
+        print(f"保存交互数据时出错: {str(e)}")
+        traceback.print_exc()
+        return None

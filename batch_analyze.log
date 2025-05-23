@@ -1,0 +1,157 @@
+2025-05-20 15:53:19,223 - INFO - 读取CSV文件: rugpullevent_1.csv
+2025-05-20 15:53:19,225 - ERROR - 批量处理时出错: [Errno 2] No such file or directory: 'rugpullevent_1.csv'
+2025-05-20 15:53:19,228 - ERROR - Traceback (most recent call last):
+  File "/root/whole_pipeline/batch_analyze.py", line 58, in run_analysis
+    df = pd.read_csv(csv_path)
+  File "/root/user_analysis/venv/lib/python3.10/site-packages/pandas/io/parsers/readers.py", line 1026, in read_csv
+    return _read(filepath_or_buffer, kwds)
+  File "/root/user_analysis/venv/lib/python3.10/site-packages/pandas/io/parsers/readers.py", line 620, in _read
+    parser = TextFileReader(filepath_or_buffer, **kwds)
+  File "/root/user_analysis/venv/lib/python3.10/site-packages/pandas/io/parsers/readers.py", line 1620, in __init__
+    self._engine = self._make_engine(f, self.engine)
+  File "/root/user_analysis/venv/lib/python3.10/site-packages/pandas/io/parsers/readers.py", line 1880, in _make_engine
+    self.handles = get_handle(
+  File "/root/user_analysis/venv/lib/python3.10/site-packages/pandas/io/common.py", line 873, in get_handle
+    handle = open(
+FileNotFoundError: [Errno 2] No such file or directory: 'rugpullevent_1.csv'
+
+2025-05-20 15:53:34,050 - INFO - 读取CSV文件: rugpullevents_1.csv
+2025-05-20 15:53:34,059 - INFO - 将处理 1 行数据，从索引 4 到 4
+2025-05-20 15:53:34,087 - INFO - 日期格式转换: 2023/5/4 -> 2023-05-04
+2025-05-20 15:53:34,088 - INFO - 处理 #4: Analyze the behavior of address 0xe9626D145a2C5261070828C1a2E1a8ad47411272 in 2023-05-04
+2025-05-20 15:53:34,191 - INFO - 分析完成，输出已保存到 output_0xe9626D145a2C5261070828C1a2E1a8ad47411272_2023-05-04.log
+2025-05-20 15:53:34,191 - INFO - 等待 5 秒后继续下一个分析...
+2025-05-20 15:53:39,197 - INFO - 批量分析完成！
+2025-05-20 15:54:44,568 - INFO - 读取CSV文件: rugpullevents_1.csv
+2025-05-20 15:54:44,573 - INFO - 将处理 2 行数据，从索引 2 到 3
+2025-05-20 15:54:44,587 - INFO - 日期格式转换: 2022/5/30 -> 2022-05-30
+2025-05-20 15:54:44,587 - INFO - 处理 #2: Analyze the behavior of address 0x7172b87400B850069C425Ecd18F2c2553B7Fb479 in 2022-05-30
+2025-05-20 16:35:25,587 - INFO - 分析完成，输出已保存到 output_0x7172b87400B850069C425Ecd18F2c2553B7Fb479_2022-05-30.log
+2025-05-20 16:35:25,588 - INFO - 等待 5 秒后继续下一个分析...
+2025-05-20 16:35:30,593 - INFO - 日期格式转换: 2023/5/7 -> 2023-05-07
+2025-05-20 16:35:30,594 - INFO - 处理 #3: Analyze the behavior of address 0x1452FD05c0c090391e2d1529cB14fA3E9405d349 in 2023-05-07
+2025-05-20 17:14:00,360 - INFO - 分析完成，输出已保存到 output_0x1452FD05c0c090391e2d1529cB14fA3E9405d349_2023-05-07.log
+2025-05-20 17:14:00,361 - INFO - 等待 5 秒后继续下一个分析...
+2025-05-20 17:14:05,367 - INFO - 批量分析完成！
+2025-05-20 17:27:29,621 - INFO - 读取CSV文件: rugpullevents_1.csv
+2025-05-20 17:27:29,631 - INFO - 将处理 6 行数据，从索引 4 到 9
+2025-05-20 17:27:29,658 - INFO - 日期格式转换: 2023/5/4 -> 2023-05-04
+2025-05-20 17:27:29,659 - INFO - 处理 #4: Analyze the behavior of address 0xe9626D145a2C5261070828C1a2E1a8ad47411272 in 2023-05-04
+2025-05-20 20:05:58,596 - INFO - 读取CSV文件: rugpullevents_1.csv
+2025-05-20 20:05:58,606 - INFO - 将处理 8 行数据，从索引 4 到 11
+2025-05-20 20:05:58,631 - INFO - 日期格式转换: 2023/5/4 -> 2023-05-04
+2025-05-20 20:05:58,631 - INFO - 处理 #4: Analyze the behavior of address 0xe9626D145a2C5261070828C1a2E1a8ad47411272 in 2023-05-04
+2025-05-20 21:34:58,620 - INFO - 读取CSV文件: rugpullevents_1.csv
+2025-05-20 21:34:58,633 - INFO - 将处理 10 行数据，从索引 5 到 14
+2025-05-20 21:34:58,654 - INFO - 日期格式转换: 2023/3/26 -> 2023-03-26
+2025-05-20 21:34:58,655 - INFO - 处理 #5: Analyze the behavior of address 0x41be327a34d5d2f0855ff7e4fb3f6f1748b3310f in 2023-03-26
+2025-05-20 22:17:57,568 - INFO - 分析完成，输出已保存到 output_0x41be327a34d5d2f0855ff7e4fb3f6f1748b3310f_2023-03-26.log
+2025-05-20 22:17:57,569 - INFO - 等待 5 秒后继续下一个分析...
+2025-05-20 22:18:02,575 - INFO - 日期格式转换: 2022/10/4 -> 2022-10-04
+2025-05-20 22:18:02,576 - INFO - 处理 #6: Analyze the behavior of address 0x05feed0ee41DBCc2df6F155dD33681281281E008 in 2022-10-04
+2025-05-20 23:10:56,959 - INFO - 分析完成，输出已保存到 output_0x05feed0ee41DBCc2df6F155dD33681281281E008_2022-10-04.log
+2025-05-20 23:10:56,961 - INFO - 等待 5 秒后继续下一个分析...
+2025-05-20 23:11:01,966 - INFO - 日期格式转换: 2023/10/23 -> 2023-10-23
+2025-05-20 23:11:01,967 - INFO - 处理 #7: Analyze the behavior of address 0x67c8423a7709aDB8ED31c04DcbB0C161637b807F in 2023-10-23
+2025-05-21 00:11:02,057 - ERROR - 处理超时: Analyze the behavior of address 0x67c8423a7709aDB8ED31c04DcbB0C161637b807F in 2023-10-23
+2025-05-21 00:11:02,066 - INFO - 日期格式转换: 2023/10/23 -> 2023-10-23
+2025-05-21 00:11:02,074 - INFO - 处理 #8: Analyze the behavior of address 0x948BbF6003E2c14403D720699003345d368E95b9 in 2023-10-23
+2025-05-21 01:11:02,183 - ERROR - 处理超时: Analyze the behavior of address 0x948BbF6003E2c14403D720699003345d368E95b9 in 2023-10-23
+2025-05-21 01:11:02,185 - INFO - 日期格式转换: 2023/10/30 -> 2023-10-30
+2025-05-21 01:11:02,186 - INFO - 处理 #9: Analyze the behavior of address 0xBd72D445893aaD1Cf9dbCEc7c186f06F9D2B5871 in 2023-10-30
+2025-05-21 02:03:33,702 - INFO - 分析完成，输出已保存到 output_0xBd72D445893aaD1Cf9dbCEc7c186f06F9D2B5871_2023-10-30.log
+2025-05-21 02:03:33,702 - INFO - 等待 5 秒后继续下一个分析...
+2025-05-21 02:03:38,709 - INFO - 日期格式转换: 2023/11/14 -> 2023-11-14
+2025-05-21 02:03:38,709 - INFO - 处理 #10: Analyze the behavior of address 0x45aF15b299De5e77b3DadCA429DD4ba466d7a448 in 2023-11-14
+2025-05-21 02:50:05,351 - INFO - 分析完成，输出已保存到 output_0x45aF15b299De5e77b3DadCA429DD4ba466d7a448_2023-11-14.log
+2025-05-21 02:50:05,352 - INFO - 等待 5 秒后继续下一个分析...
+2025-05-21 02:50:10,358 - INFO - 日期格式转换: 2023/10/30 -> 2023-10-30
+2025-05-21 02:50:10,359 - INFO - 处理 #11: Analyze the behavior of address 0xBd72D445893aaD1Cf9dbCEc7c186f06F9D2B5871 in 2023-10-30
+2025-05-21 03:49:41,577 - INFO - 分析完成，输出已保存到 output_0xBd72D445893aaD1Cf9dbCEc7c186f06F9D2B5871_2023-10-30.log
+2025-05-21 03:49:41,577 - INFO - 等待 5 秒后继续下一个分析...
+2025-05-21 03:49:46,583 - INFO - 日期格式转换: 2024/5/16 -> 2024-05-16
+2025-05-21 03:49:46,584 - INFO - 处理 #12: Analyze the behavior of address 0x216D82B8Da13375D3136fc4a5b2231bcd87Dd727 in 2024-05-16
+2025-05-21 04:39:30,016 - INFO - 分析完成，输出已保存到 output_0x216D82B8Da13375D3136fc4a5b2231bcd87Dd727_2024-05-16.log
+2025-05-21 04:39:30,017 - INFO - 等待 5 秒后继续下一个分析...
+2025-05-21 04:39:35,022 - INFO - 日期格式转换: 2024/4/12 -> 2024-04-12
+2025-05-21 04:39:35,023 - INFO - 处理 #13: Analyze the behavior of address 0x70d8b31f4eee0e9988d0b196531205a9d30ad104 in 2024-04-12
+2025-05-21 05:39:35,033 - ERROR - 处理超时: Analyze the behavior of address 0x70d8b31f4eee0e9988d0b196531205a9d30ad104 in 2024-04-12
+2025-05-21 05:39:35,035 - INFO - 日期格式转换: 2024/5/13 -> 2024-05-13
+2025-05-21 05:39:35,035 - INFO - 处理 #14: Analyze the behavior of address 0xB23baA7c45A9539b847846Fbb2066D2eE1ef9885 in 2024-05-13
+2025-05-21 06:29:44,189 - INFO - 分析完成，输出已保存到 output_0xB23baA7c45A9539b847846Fbb2066D2eE1ef9885_2024-05-13.log
+2025-05-21 06:29:44,190 - INFO - 等待 5 秒后继续下一个分析...
+2025-05-21 06:29:49,197 - INFO - 批量分析完成！
+2025-05-22 22:04:09,977 - INFO - 读取CSV文件: rugpullevent_1.csv
+2025-05-22 22:04:09,978 - ERROR - 批量处理时出错: [Errno 2] No such file or directory: 'rugpullevent_1.csv'
+2025-05-22 22:04:09,980 - ERROR - Traceback (most recent call last):
+  File "/root/whole_pipeline/batch_analyze.py", line 58, in run_analysis
+    df = pd.read_csv(csv_path)
+  File "/root/user_analysis/venv/lib/python3.10/site-packages/pandas/io/parsers/readers.py", line 1026, in read_csv
+    return _read(filepath_or_buffer, kwds)
+  File "/root/user_analysis/venv/lib/python3.10/site-packages/pandas/io/parsers/readers.py", line 620, in _read
+    parser = TextFileReader(filepath_or_buffer, **kwds)
+  File "/root/user_analysis/venv/lib/python3.10/site-packages/pandas/io/parsers/readers.py", line 1620, in __init__
+    self._engine = self._make_engine(f, self.engine)
+  File "/root/user_analysis/venv/lib/python3.10/site-packages/pandas/io/parsers/readers.py", line 1880, in _make_engine
+    self.handles = get_handle(
+  File "/root/user_analysis/venv/lib/python3.10/site-packages/pandas/io/common.py", line 873, in get_handle
+    handle = open(
+FileNotFoundError: [Errno 2] No such file or directory: 'rugpullevent_1.csv'
+
+2025-05-22 22:04:30,889 - INFO - 读取CSV文件: rugpullevents_1.csv
+2025-05-22 22:04:30,908 - INFO - 将处理 7 行数据，从索引 7 到 13
+2025-05-22 22:04:30,946 - INFO - 日期格式转换: 2023/3/26 -> 2023-03-26
+2025-05-22 22:04:30,947 - INFO - 处理 #7: Analyze the behavior of address 0x41be327a34d5d2f0855ff7e4fb3f6f1748b3310f in 2023-03-26
+2025-05-22 22:49:38,443 - INFO - 分析完成，输出已保存到 output_0x41be327a34d5d2f0855ff7e4fb3f6f1748b3310f_2023-03-26.log
+2025-05-22 22:49:38,444 - INFO - 等待 5 秒后继续下一个分析...
+2025-05-22 22:49:43,450 - INFO - 日期格式转换: 2022/10/4 -> 2022-10-04
+2025-05-22 22:49:43,450 - INFO - 处理 #8: Analyze the behavior of address 0x05feed0ee41DBCc2df6F155dD33681281281E008 in 2022-10-04
+2025-05-22 23:29:07,765 - INFO - 分析完成，输出已保存到 output_0x05feed0ee41DBCc2df6F155dD33681281281E008_2022-10-04.log
+2025-05-22 23:29:07,765 - INFO - 等待 5 秒后继续下一个分析...
+2025-05-22 23:29:12,771 - INFO - 日期格式转换: 2023/10/23 -> 2023-10-23
+2025-05-22 23:29:12,771 - INFO - 处理 #9: Analyze the behavior of address 0x67c8423a7709aDB8ED31c04DcbB0C161637b807F in 2023-10-23
+2025-05-23 00:29:12,880 - ERROR - 处理超时: Analyze the behavior of address 0x67c8423a7709aDB8ED31c04DcbB0C161637b807F in 2023-10-23
+2025-05-23 00:29:12,888 - INFO - 日期格式转换: 2023/10/23 -> 2023-10-23
+2025-05-23 00:29:12,889 - INFO - 处理 #10: Analyze the behavior of address 0x948BbF6003E2c14403D720699003345d368E95b9 in 2023-10-23
+2025-05-23 01:28:40,669 - INFO - 分析完成，输出已保存到 output_0x948BbF6003E2c14403D720699003345d368E95b9_2023-10-23.log
+2025-05-23 01:28:40,681 - INFO - 等待 5 秒后继续下一个分析...
+2025-05-23 01:28:45,689 - INFO - 日期格式转换: 2023/10/30 -> 2023-10-30
+2025-05-23 01:28:45,690 - INFO - 处理 #11: Analyze the behavior of address 0xBd72D445893aaD1Cf9dbCEc7c186f06F9D2B5871 in 2023-10-30
+2025-05-23 02:28:45,707 - ERROR - 处理超时: Analyze the behavior of address 0xBd72D445893aaD1Cf9dbCEc7c186f06F9D2B5871 in 2023-10-30
+2025-05-23 02:28:45,713 - INFO - 日期格式转换: 2023/11/14 -> 2023-11-14
+2025-05-23 02:28:45,717 - INFO - 处理 #12: Analyze the behavior of address 0x45aF15b299De5e77b3DadCA429DD4ba466d7a448 in 2023-11-14
+2025-05-23 03:21:14,770 - INFO - 分析完成，输出已保存到 output_0x45aF15b299De5e77b3DadCA429DD4ba466d7a448_2023-11-14.log
+2025-05-23 03:21:14,770 - INFO - 等待 5 秒后继续下一个分析...
+2025-05-23 03:21:19,777 - INFO - 日期格式转换: 2024/4/12 -> 2024-04-12
+2025-05-23 03:21:19,778 - INFO - 处理 #13: Analyze the behavior of address 0x70d8b31f4eee0e9988d0b196531205a9d30ad104 in 2024-04-12
+2025-05-23 04:21:18,329 - INFO - 分析完成，输出已保存到 output_0x70d8b31f4eee0e9988d0b196531205a9d30ad104_2024-04-12.log
+2025-05-23 04:21:18,332 - INFO - 等待 5 秒后继续下一个分析...
+2025-05-23 04:21:23,337 - INFO - 批量分析完成！
+2025-05-23 08:10:48,559 - INFO - 读取CSV文件: rugpullevents_1.csv
+2025-05-23 08:10:48,564 - INFO - 将处理 10 行数据，从索引 15 到 24
+2025-05-23 08:10:48,614 - INFO - 日期格式转换: 2024/5/9 -> 2024-05-09
+2025-05-23 08:10:48,614 - INFO - 处理 #15: Analyze the behavior of address 0x829d2578aa1b013665e421ae894d055da2120cc8 in 2024-05-09
+2025-05-23 09:07:28,011 - INFO - 分析完成，输出已保存到 output_0x829d2578aa1b013665e421ae894d055da2120cc8_2024-05-09.log
+2025-05-23 09:07:28,012 - INFO - 等待 5 秒后继续下一个分析...
+2025-05-23 09:07:33,017 - INFO - 日期格式转换: 2024/5/2 -> 2024-05-02
+2025-05-23 09:07:33,018 - INFO - 处理 #16: Analyze the behavior of address 0x9Cb6DD255A6bbe32130ce645ec45c0A3e9D87A4a in 2024-05-02
+2025-05-23 10:07:33,027 - ERROR - 处理超时: Analyze the behavior of address 0x9Cb6DD255A6bbe32130ce645ec45c0A3e9D87A4a in 2024-05-02
+2025-05-23 10:07:33,029 - INFO - 日期格式转换: 2024/4/11 -> 2024-04-11
+2025-05-23 10:07:33,029 - INFO - 处理 #17: Analyze the behavior of address 0xf445a2E240C73cFaaf0654202157F9c5457E5F73 in 2024-04-11
+2025-05-23 11:07:33,045 - ERROR - 处理超时: Analyze the behavior of address 0xf445a2E240C73cFaaf0654202157F9c5457E5F73 in 2024-04-11
+2025-05-23 11:07:33,047 - INFO - 日期格式转换: 2024/2/9 -> 2024-02-09
+2025-05-23 11:07:33,048 - INFO - 处理 #18: Analyze the behavior of address 0x070669e366727369064633ef5702107D73Cee0e5 in 2024-02-09
+2025-05-23 12:07:33,133 - ERROR - 处理超时: Analyze the behavior of address 0x070669e366727369064633ef5702107D73Cee0e5 in 2024-02-09
+2025-05-23 12:07:33,135 - INFO - 日期格式转换: 2023/12/28 -> 2023-12-28
+2025-05-23 12:07:33,136 - INFO - 处理 #19: Analyze the behavior of address 0xCf64487276E05afDc3eD669fB5DCEbb17000fD58 in 2023-12-28
+2025-05-23 13:01:19,484 - INFO - 分析完成，输出已保存到 output_0xCf64487276E05afDc3eD669fB5DCEbb17000fD58_2023-12-28.log
+2025-05-23 13:01:19,484 - INFO - 等待 5 秒后继续下一个分析...
+2025-05-23 13:01:24,490 - INFO - 日期格式转换: 2023/12/25 -> 2023-12-25
+2025-05-23 13:01:24,491 - INFO - 处理 #20: Analyze the behavior of address 0x797885C0a6CfffCbc4D2e3C1ca0B4F07112dB6a3 in 2023-12-25
+2025-05-23 14:01:24,510 - ERROR - 处理超时: Analyze the behavior of address 0x797885C0a6CfffCbc4D2e3C1ca0B4F07112dB6a3 in 2023-12-25
+2025-05-23 14:01:24,518 - INFO - 日期格式转换: 2023/12/11 -> 2023-12-11
+2025-05-23 14:01:24,518 - INFO - 处理 #21: Analyze the behavior of address 0x3f73d163Ef111a198e0076BFE5910B502A77e7dE in 2023-12-11
+2025-05-23 14:51:28,883 - INFO - 分析完成，输出已保存到 output_0x3f73d163Ef111a198e0076BFE5910B502A77e7dE_2023-12-11.log
+2025-05-23 14:51:28,883 - INFO - 等待 5 秒后继续下一个分析...
+2025-05-23 14:51:33,889 - INFO - 日期格式转换: 2023/12/7 -> 2023-12-07
+2025-05-23 14:51:33,889 - INFO - 处理 #22: Analyze the behavior of address 0x1bA6969b6236bFA500aB18cb6810b2A8C1Fbf2Df in 2023-12-07

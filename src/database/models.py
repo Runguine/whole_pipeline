@@ -33,3 +33,6 @@ class UserInteraction(Base):
     event_logs = Column(JSON)  # 存储交易收据中的事件日志
     trace_data = Column(JSON)  # 新增：存储交易追踪数据
     network = Column(String(20), default='ethereum')  # 固定为以太坊网络
+    transfer_amount = Column(String(66))  # 新增：存储转账金额（字符串格式，可以处理大数值）
+    token_address = Column(String(42))   # 新增：存储代币地址（对于ETH转账，可存为NULL或特定值）
+    is_token_transfer = Column(Boolean, default=False)  # 新增：标识是否为代币转账
